@@ -6,6 +6,7 @@ import time
 import base64
 import hashlib
 import secrets
+import re
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -30,6 +31,7 @@ CREATIVES_URL = "https://api.direct.yandex.com/json/v5/creatives"
 CAMPAIGNS_URL = "https://api.direct.yandex.com/json/v501/campaigns"
 RETARGETINGLISTS_URL = "https://api.direct.yandex.com/json/v5/retargetinglists"
 STRATEGIES_URL = "https://api.direct.yandex.com/json/v501/strategies"
+KEYWORDS_URL = "https://api.direct.yandex.com/json/v5/keywords"
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "data" / "report.enc"
@@ -78,6 +80,24 @@ TRACKED_GOAL_IDS = (
     + list(WEBINAR_GOALS.values())
     + list(SURVEY_GOALS.values())
 )
+
+
+KNOWN_GOAL_NAMES = {
+    **{
+        str(goal_id): name
+        for name, goal_id in ORDER_GOALS.items()
+    },
+    **{
+        str(goal_id): name
+        for name, goal_id in WEBINAR_GOALS.items()
+    },
+    **{
+        str(goal_id): name
+        for name, goal_id in SURVEY_GOALS.items()
+    },
+    "12": "Вовлечённые сессии",
+    "13": "Priority Goals",
+}
 
 # В Direct Reports API за один запрос можно передать до 10 целей.
 # Сейчас их ровно 10.
@@ -1444,6 +1464,11 @@ def create_performance_item(
 
         "proxy_spend": 0.0,
 
+        "shared_proxy_impressions": 0,
+        "shared_proxy_clicks": 0,
+        "shared_proxy_spend": 0.0,
+        "shared_asset_count": 0,
+
         "unattributed_impressions": 0,
 
         "unattributed_clicks": 0,
@@ -1531,6 +1556,35 @@ def add_stats(
 
         item[
             "proxy_spend"
+        ] += row["cost"]
+
+    elif attribution == "shared_proxy":
+        # Контекстная proxy-атрибуция: статистика объявления
+        # присваивается каждому визуалу, который присутствовал в нём.
+        # Это НЕ точная asset-level атрибуция, но позволяет сравнивать
+        # контексты использования креатива вместо вывода нулей.
+        item[
+            "proxy_impressions"
+        ] += row["impressions"]
+
+        item[
+            "proxy_clicks"
+        ] += row["clicks"]
+
+        item[
+            "proxy_spend"
+        ] += row["cost"]
+
+        item[
+            "shared_proxy_impressions"
+        ] += row["impressions"]
+
+        item[
+            "shared_proxy_clicks"
+        ] += row["clicks"]
+
+        item[
+            "shared_proxy_spend"
         ] += row["cost"]
 
     item["daily"].append({
@@ -1690,8 +1744,12 @@ def build_asset_performance(
 
                 continue
 
-            # Несколько картинок/видео —
-            # статистику не делим.
+            # Если ассетов несколько, Direct не отдаёт статистику
+            # конкретного изображения внутри responsive-объявления.
+            # Вместо нулей используем shared/context proxy:
+            # каждому ассету присваиваем статистику объявления, в котором
+            # он участвовал. Это позволяет оценить контекст использования,
+            # но НЕ является точной индивидуальной атрибуцией.
             target_assets = (
                 responsive_videos
                 if ad_format == "VIDEO"
@@ -1704,28 +1762,20 @@ def build_asset_performance(
                     row,
                 )
 
-                item[
-                    "unattributed_impressions"
-                ] += row[
-                    "impressions"
-                ]
+                item["shared_asset_count"] = max(
+                    item.get(
+                        "shared_asset_count",
+                        0
+                    ),
+                    len(
+                        target_assets
+                    ),
+                )
 
-                item[
-                    "unattributed_clicks"
-                ] += row[
-                    "clicks"
-                ]
-
-                item[
-                    "unattributed_spend"
-                ] += row[
-                    "cost"
-                ]
-
-                item[
-                    "unattributed_ad_ids"
-                ].add(
-                    row["ad_id"]
+                add_stats(
+                    item,
+                    row,
+                    "shared_proxy",
                 )
 
             continue
@@ -1919,6 +1969,15 @@ def build_asset_performance(
         )
 
         item[
+            "shared_proxy_spend"
+        ] = round(
+            item[
+                "shared_proxy_spend"
+            ],
+            2
+        )
+
+        item[
             "unattributed_spend"
         ] = round(
             item[
@@ -1967,6 +2026,29 @@ def build_asset_performance(
             item[
                 "attribution"
             ] = "exact"
+
+        elif (
+            item.get(
+                "shared_proxy_impressions",
+                0
+            ) > 0
+            and item[
+                "exact_impressions"
+            ] == 0
+            and (
+                item[
+                    "proxy_impressions"
+                ]
+                ==
+                item.get(
+                    "shared_proxy_impressions",
+                    0
+                )
+            )
+        ):
+            item[
+                "attribution"
+            ] = "shared_proxy"
 
         elif item[
             "impressions"
@@ -2495,6 +2577,19 @@ def analyze_performance(
             "статистике объявления, "
             "к которому привязан этот "
             "единственный визуал."
+        )
+
+    elif item[
+        "attribution"
+    ] == "shared_proxy":
+        reason += (
+            " Это контекстная proxy-оценка: "
+            "в объявлении несколько визуалов, "
+            "поэтому статистика объявления "
+            "используется для каждого присутствующего "
+            "ассета. Сравнение полезно для поиска "
+            "сильных контекстов, но не доказывает "
+            "индивидуальный вклад картинки."
         )
 
     return {
@@ -3391,6 +3486,59 @@ def metrics_from_report_row(row):
 # CAMPAIGN CONFIG / GOALS
 # ------------------------------------------------------------
 
+def extract_goal_ids_recursive(value):
+    result = []
+
+    if isinstance(
+        value,
+        dict
+    ):
+        for key, child in value.items():
+            if (
+                key == "GoalId"
+                and child is not None
+            ):
+                goal_id = str(
+                    child
+                ).strip()
+
+                if goal_id:
+                    result.append(
+                        goal_id
+                    )
+
+            else:
+                result.extend(
+                    extract_goal_ids_recursive(
+                        child
+                    )
+                )
+
+    elif isinstance(
+        value,
+        list
+    ):
+        for child in value:
+            result.extend(
+                extract_goal_ids_recursive(
+                    child
+                )
+            )
+
+    return result
+
+
+def readable_goal_name(goal_id):
+    goal_id = str(
+        goal_id
+    )
+
+    return KNOWN_GOAL_NAMES.get(
+        goal_id,
+        f"Цель {goal_id}",
+    )
+
+
 def get_campaign_configuration():
     payload = {
         "method": "get",
@@ -3402,11 +3550,14 @@ def get_campaign_configuration():
                 "Type",
                 "State",
                 "Status",
+                "NegativeKeywords",
             ],
             "TextCampaignFieldNames": [
                 "CounterIds",
                 "PriorityGoals",
                 "AttributionModel",
+                "BiddingStrategy",
+                "PackageBiddingStrategy",
             ],
             "CpmBannerCampaignFieldNames": [
                 "CounterIds",
@@ -3415,6 +3566,8 @@ def get_campaign_configuration():
                 "CounterIds",
                 "PriorityGoals",
                 "AttributionModel",
+                "BiddingStrategy",
+                "PackageBiddingStrategy",
             ],
             "Page": {
                 "Limit": 10000,
@@ -3433,62 +3586,250 @@ def get_campaign_configuration():
     goal_ids = set()
     display_ids = []
 
-    for campaign in result.get("Campaigns", []):
+    for campaign in result.get(
+        "Campaigns",
+        []
+    ):
         item = {
-            "id": str(campaign.get("Id", "")),
-            "name": campaign.get("Name") or "",
-            "type": campaign.get("Type") or "",
-            "state": campaign.get("State") or "",
-            "status": campaign.get("Status") or "",
+            "id": str(
+                campaign.get(
+                    "Id",
+                    ""
+                )
+            ),
+            "name": (
+                campaign.get(
+                    "Name"
+                )
+                or ""
+            ),
+            "type": (
+                campaign.get(
+                    "Type"
+                )
+                or ""
+            ),
+            "state": (
+                campaign.get(
+                    "State"
+                )
+                or ""
+            ),
+            "status": (
+                campaign.get(
+                    "Status"
+                )
+                or ""
+            ),
+            "negative_keywords": [],
             "counter_ids": [],
             "priority_goals": [],
             "attribution_model": None,
+            "bidding_strategy": {},
+            "package_strategy_id": None,
+            "package_strategy_platforms": {},
         }
 
-        block = (
-            campaign.get("TextCampaign")
-            or campaign.get("UnifiedCampaign")
-            or campaign.get("CpmBannerCampaign")
+        negative_keywords = (
+            campaign.get(
+                "NegativeKeywords"
+            )
             or {}
         )
 
-        counter_ids = block.get("CounterIds") or {}
-        item["counter_ids"] = [
-            str(x)
-            for x in (counter_ids.get("Items") or [])
+        item[
+            "negative_keywords"
+        ] = [
+            str(value)
+            for value in (
+                negative_keywords.get(
+                    "Items"
+                )
+                or []
+            )
+            if str(
+                value
+            ).strip()
         ]
 
-        priority_goals = block.get("PriorityGoals") or {}
-        for goal in priority_goals.get("Items") or []:
-            goal_id = str(goal.get("GoalId", "")).strip()
+        block = (
+            campaign.get(
+                "TextCampaign"
+            )
+            or campaign.get(
+                "UnifiedCampaign"
+            )
+            or campaign.get(
+                "CpmBannerCampaign"
+            )
+            or {}
+        )
+
+        counter_ids = (
+            block.get(
+                "CounterIds"
+            )
+            or {}
+        )
+
+        item[
+            "counter_ids"
+        ] = [
+            str(x)
+            for x in (
+                counter_ids.get(
+                    "Items"
+                )
+                or []
+            )
+        ]
+
+        priority_goals = (
+            block.get(
+                "PriorityGoals"
+            )
+            or {}
+        )
+
+        for goal in (
+            priority_goals.get(
+                "Items"
+            )
+            or []
+        ):
+            goal_id = str(
+                goal.get(
+                    "GoalId",
+                    ""
+                )
+            ).strip()
+
             if not goal_id:
                 continue
-            goal_ids.add(goal_id)
-            item["priority_goals"].append({
+
+            goal_ids.add(
+                goal_id
+            )
+
+            raw_value = safe_float(
+                goal.get(
+                    "Value"
+                )
+            )
+
+            item[
+                "priority_goals"
+            ].append({
                 "goal_id": goal_id,
-                "value": safe_float(goal.get("Value")),
-                "is_metrika_source_of_value": goal.get("IsMetrikaSourceOfValue"),
+                "goal_name": (
+                    readable_goal_name(
+                        goal_id
+                    )
+                ),
+                "value_raw": raw_value,
+                "value_currency": round(
+                    raw_value
+                    / 1_000_000,
+                    2,
+                ) if raw_value else 0,
+                "is_metrika_source_of_value": (
+                    goal.get(
+                        "IsMetrikaSourceOfValue"
+                    )
+                ),
             })
 
-        item["attribution_model"] = block.get("AttributionModel")
+        item[
+            "attribution_model"
+        ] = block.get(
+            "AttributionModel"
+        )
 
-        if item["type"] == "CPM_BANNER_CAMPAIGN":
-            display_ids.append(item["id"])
+        item[
+            "bidding_strategy"
+        ] = (
+            block.get(
+                "BiddingStrategy"
+            )
+            or {}
+        )
 
-        campaigns.append(item)
+        package = (
+            block.get(
+                "PackageBiddingStrategy"
+            )
+            or {}
+        )
+
+        if package.get(
+            "StrategyId"
+        ) is not None:
+            item[
+                "package_strategy_id"
+            ] = str(
+                package.get(
+                    "StrategyId"
+                )
+            )
+
+        item[
+            "package_strategy_platforms"
+        ] = (
+            package.get(
+                "Platforms"
+            )
+            or {}
+        )
+
+        if (
+            item[
+                "type"
+            ]
+            ==
+            "CPM_BANNER_CAMPAIGN"
+        ):
+            display_ids.append(
+                item["id"]
+            )
+
+        campaigns.append(
+            item
+        )
 
     return {
         "campaigns": campaigns,
-        "goal_ids": sorted(goal_ids)[:10],
-        "display_campaign_ids": display_ids,
+        "goal_ids": sorted(
+            goal_ids
+        ),
+        "display_campaign_ids": (
+            display_ids
+        ),
         "summary": {
-            "campaigns": len(campaigns),
-            "with_counters": sum(1 for x in campaigns if x["counter_ids"]),
-            "priority_goals": len(goal_ids),
-            "display_campaigns": len(display_ids),
+            "campaigns": len(
+                campaigns
+            ),
+            "with_counters": sum(
+                1
+                for x in campaigns
+                if x[
+                    "counter_ids"
+                ]
+            ),
+            "priority_goals": len(
+                goal_ids
+            ),
+            "with_negative_keywords": sum(
+                1
+                for x in campaigns
+                if x[
+                    "negative_keywords"
+                ]
+            ),
+            "display_campaigns": len(
+                display_ids
+            ),
         },
     }
-
 
 # ------------------------------------------------------------
 # PORTFOLIO STRATEGIES / GOALS
@@ -3508,40 +3849,1079 @@ def get_strategy_configuration():
                 "CounterIds",
                 "PriorityGoals",
             ],
-            "Page": {"Limit": 10000, "Offset": 0},
+            "StrategyMaximumConversionRateFieldNames": [
+                "GoalId",
+            ],
+            "StrategyAverageCpaFieldNames": [
+                "GoalId",
+                "AverageCpa",
+            ],
+            "StrategyPayForConversionFieldNames": [
+                "GoalId",
+                "Cpa",
+            ],
+            "StrategyAverageCrrFieldNames": [
+                "GoalId",
+                "Crr",
+            ],
+            "StrategyPayForConversionCrrFieldNames": [
+                "GoalId",
+                "Crr",
+            ],
+            "StrategyPayForConversionMultipleGoalsFieldNames": [
+                "GoalId",
+            ],
+            "Page": {
+                "Limit": 10000,
+                "Offset": 0,
+            },
         },
     }
-    result = direct_api(STRATEGIES_URL, payload, "Strategies.get")
+
+    result = direct_api(
+        STRATEGIES_URL,
+        payload,
+        "Strategies.get",
+    )
+
     rows = []
     goal_ids = set()
-    for item in result.get("Strategies", []):
+
+    for item in result.get(
+        "Strategies",
+        []
+    ):
         goals = []
-        for goal in ((item.get("PriorityGoals") or {}).get("Items") or []):
-            gid = str(goal.get("GoalId") or "").strip()
+
+        for goal in (
+            (
+                item.get(
+                    "PriorityGoals"
+                )
+                or {}
+            ).get(
+                "Items"
+            )
+            or []
+        ):
+            gid = str(
+                goal.get(
+                    "GoalId"
+                )
+                or ""
+            ).strip()
+
             if not gid:
                 continue
-            goal_ids.add(gid)
+
+            goal_ids.add(
+                gid
+            )
+
+            raw_value = safe_float(
+                goal.get(
+                    "Value"
+                )
+            )
+
             goals.append({
                 "goal_id": gid,
-                "value": safe_float(goal.get("Value")),
-                "is_metrika_source_of_value": goal.get("IsMetrikaSourceOfValue"),
+                "goal_name": (
+                    readable_goal_name(
+                        gid
+                    )
+                ),
+                "value_raw": raw_value,
+                "value_currency": round(
+                    raw_value
+                    / 1_000_000,
+                    2,
+                ) if raw_value else 0,
+                "is_metrika_source_of_value": (
+                    goal.get(
+                        "IsMetrikaSourceOfValue"
+                    )
+                ),
             })
+
+        strategy_goal_ids = sorted(
+            set(
+                extract_goal_ids_recursive(
+                    item
+                )
+            )
+        )
+
         rows.append({
-            "id": str(item.get("Id") or ""),
-            "name": item.get("Name") or "",
-            "type": item.get("Type") or "",
-            "status_archived": item.get("StatusArchived") or "",
-            "attribution_model": item.get("AttributionModel"),
-            "counter_ids": [str(x) for x in ((item.get("CounterIds") or {}).get("Items") or [])],
+            "id": str(
+                item.get(
+                    "Id"
+                )
+                or ""
+            ),
+            "name": (
+                item.get(
+                    "Name"
+                )
+                or ""
+            ),
+            "type": (
+                item.get(
+                    "Type"
+                )
+                or ""
+            ),
+            "status_archived": (
+                item.get(
+                    "StatusArchived"
+                )
+                or ""
+            ),
+            "attribution_model": (
+                item.get(
+                    "AttributionModel"
+                )
+            ),
+            "counter_ids": [
+                str(x)
+                for x in (
+                    (
+                        item.get(
+                            "CounterIds"
+                        )
+                        or {}
+                    ).get(
+                        "Items"
+                    )
+                    or []
+                )
+            ],
             "priority_goals": goals,
+            "strategy_goal_ids": (
+                strategy_goal_ids
+            ),
         })
+
     return {
         "rows": rows,
-        "goal_ids": sorted(goal_ids)[:10],
+        "goal_ids": sorted(
+            goal_ids
+        ),
         "summary": {
-            "strategies": len(rows),
-            "priority_goals": len(goal_ids),
+            "strategies": len(
+                rows
+            ),
+            "priority_goals": len(
+                goal_ids
+            ),
         },
+    }
+
+
+# ------------------------------------------------------------
+# KEYWORD CONFIGURATION / STATUS
+# ------------------------------------------------------------
+
+def get_keyword_configuration(
+    campaign_ids
+):
+    campaign_ids = sorted({
+        int(x)
+        for x in campaign_ids
+        if str(x).isdigit()
+    })
+
+    by_id = {}
+    rows = []
+
+    for campaign_chunk in chunks(
+        campaign_ids,
+        10,
+    ):
+        offset = 0
+
+        while True:
+            payload = {
+                "method": "get",
+                "params": {
+                    "SelectionCriteria": {
+                        "CampaignIds": (
+                            campaign_chunk
+                        ),
+                    },
+                    "FieldNames": [
+                        "Id",
+                        "Keyword",
+                        "State",
+                        "Status",
+                        "ServingStatus",
+                        "AdGroupId",
+                        "CampaignId",
+                    ],
+                    "Page": {
+                        "Limit": 10000,
+                        "Offset": offset,
+                    },
+                },
+            }
+
+            result = direct_api(
+                KEYWORDS_URL,
+                payload,
+                "Keywords.get",
+            )
+
+            batch = result.get(
+                "Keywords",
+                []
+            )
+
+            for item in batch:
+                row = {
+                    "id": str(
+                        item.get(
+                            "Id"
+                        )
+                        or ""
+                    ),
+                    "keyword": (
+                        item.get(
+                            "Keyword"
+                        )
+                        or ""
+                    ),
+                    "state": (
+                        item.get(
+                            "State"
+                        )
+                        or "UNKNOWN"
+                    ),
+                    "status": (
+                        item.get(
+                            "Status"
+                        )
+                        or "UNKNOWN"
+                    ),
+                    "serving_status": (
+                        item.get(
+                            "ServingStatus"
+                        )
+                        or "UNKNOWN"
+                    ),
+                    "ad_group_id": str(
+                        item.get(
+                            "AdGroupId"
+                        )
+                        or ""
+                    ),
+                    "campaign_id": str(
+                        item.get(
+                            "CampaignId"
+                        )
+                        or ""
+                    ),
+                }
+
+                rows.append(
+                    row
+                )
+
+                if row["id"]:
+                    by_id[
+                        row["id"]
+                    ] = row
+
+            if len(
+                batch
+            ) < 10000:
+                break
+
+            offset += 10000
+
+    return {
+        "rows": rows,
+        "by_id": by_id,
+        "summary": {
+            "keywords": len(
+                rows
+            ),
+            "on": sum(
+                1
+                for x in rows
+                if x["state"] == "ON"
+            ),
+            "suspended": sum(
+                1
+                for x in rows
+                if x["state"]
+                == "SUSPENDED"
+            ),
+            "rejected": sum(
+                1
+                for x in rows
+                if x["status"]
+                == "REJECTED"
+            ),
+            "rarely_served": sum(
+                1
+                for x in rows
+                if x[
+                    "serving_status"
+                ]
+                == "RARELY_SERVED"
+            ),
+        },
+    }
+
+
+def enrich_keywords_with_configuration(
+    keywords,
+    keyword_configuration,
+):
+    by_id = (
+        keyword_configuration.get(
+            "by_id",
+            {}
+        )
+    )
+
+    for item in keywords:
+        states = set()
+        statuses = set()
+        serving_statuses = set()
+        config_rows = []
+
+        for criterion_id in (
+            item.get(
+                "criterion_ids",
+                []
+            )
+        ):
+            config = by_id.get(
+                str(
+                    criterion_id
+                )
+            )
+
+            if not config:
+                continue
+
+            config_rows.append(
+                config
+            )
+            states.add(
+                config[
+                    "state"
+                ]
+            )
+            statuses.add(
+                config[
+                    "status"
+                ]
+            )
+            serving_statuses.add(
+                config[
+                    "serving_status"
+                ]
+            )
+
+        item["states"] = sorted(
+            states
+        )
+        item["statuses"] = sorted(
+            statuses
+        )
+        item[
+            "serving_statuses"
+        ] = sorted(
+            serving_statuses
+        )
+        item[
+            "rarely_served"
+        ] = (
+            "RARELY_SERVED"
+            in serving_statuses
+        )
+        item[
+            "keyword_configurations"
+        ] = config_rows
+
+    return keywords
+
+
+def normalize_negative_phrase(
+    value
+):
+    value = str(
+        value
+        or ""
+    ).lower()
+
+    # Убираем служебные операторы Direct и оставляем слова.
+    value = re.sub(
+        r"[!+\\-\\[\\]\\(\\)\\\"']",
+        " ",
+        value,
+    )
+
+    return " ".join(
+        value.split()
+    )
+
+
+def negative_phrase_matches_query(
+    negative_phrase,
+    query
+):
+    negative = (
+        normalize_negative_phrase(
+            negative_phrase
+        )
+    )
+
+    query = normalize_text(
+        query
+    )
+
+    if not negative:
+        return False
+
+    negative_tokens = (
+        negative.split()
+    )
+    query_tokens = (
+        query.split()
+    )
+
+    if not negative_tokens:
+        return False
+
+    if len(
+        negative_tokens
+    ) == 1:
+        return (
+            negative_tokens[0]
+            in query_tokens
+        )
+
+    # Проверяем последовательность слов.
+    size = len(
+        negative_tokens
+    )
+
+    for index in range(
+        0,
+        len(query_tokens)
+        - size
+        + 1,
+    ):
+        if (
+            query_tokens[
+                index:index + size
+            ]
+            ==
+            negative_tokens
+        ):
+            return True
+
+    return False
+
+
+def build_negative_keyword_audit(
+    campaign_configuration,
+    search_queries,
+):
+    query_rows = (
+        search_queries.get(
+            "rows",
+            []
+        )
+    )
+
+    campaigns = []
+
+    for campaign in (
+        campaign_configuration.get(
+            "campaigns",
+            []
+        )
+    ):
+        negatives = (
+            campaign.get(
+                "negative_keywords",
+                []
+            )
+        )
+
+        conflict_rows = []
+
+        for negative in negatives:
+            matches = []
+
+            for query in query_rows:
+                query_campaign_ids = {
+                    str(x)
+                    for x in (
+                        query.get(
+                            "campaign_ids",
+                            []
+                        )
+                    )
+                }
+
+                if (
+                    campaign["id"]
+                    not in query_campaign_ids
+                ):
+                    continue
+
+                if (
+                    safe_float(
+                        query.get(
+                            "conversions"
+                        )
+                    )
+                    <= 0
+                ):
+                    continue
+
+                if negative_phrase_matches_query(
+                    negative,
+                    query.get(
+                        "query"
+                    ),
+                ):
+                    matches.append({
+                        "query": query.get(
+                            "query"
+                        ),
+                        "order_conversions": (
+                            query.get(
+                                "order_conversions",
+                                0
+                            )
+                        ),
+                        "webinar_conversions": (
+                            query.get(
+                                "webinar_conversions",
+                                0
+                            )
+                        ),
+                        "survey_conversions": (
+                            query.get(
+                                "survey_conversions",
+                                0
+                            )
+                        ),
+                        "cost": query.get(
+                            "cost",
+                            0
+                        ),
+                    })
+
+            if matches:
+                conflict_rows.append({
+                    "negative_keyword": (
+                        negative
+                    ),
+                    "historical_converting_queries": (
+                        matches[:20]
+                    ),
+                    "match_count": len(
+                        matches
+                    ),
+                })
+
+        campaigns.append({
+            "campaign_id": (
+                campaign["id"]
+            ),
+            "campaign_name": (
+                campaign["name"]
+            ),
+            "negative_keywords": (
+                negatives
+            ),
+            "negative_count": len(
+                negatives
+            ),
+            "potential_conflicts": (
+                conflict_rows
+            ),
+            "potential_conflict_count": sum(
+                x["match_count"]
+                for x in conflict_rows
+            ),
+        })
+
+    campaigns.sort(
+        key=lambda x: (
+            -x[
+                "potential_conflict_count"
+            ],
+            -x[
+                "negative_count"
+            ],
+            x[
+                "campaign_name"
+            ],
+        )
+    )
+
+    return {
+        "campaigns": campaigns,
+        "summary": {
+            "campaigns": len(
+                campaigns
+            ),
+            "campaigns_with_negatives": sum(
+                1
+                for x in campaigns
+                if x[
+                    "negative_count"
+                ] > 0
+            ),
+            "negative_keywords": sum(
+                x[
+                    "negative_count"
+                ]
+                for x in campaigns
+            ),
+            "potential_conflicts": sum(
+                x[
+                    "potential_conflict_count"
+                ]
+                for x in campaigns
+            ),
+        },
+        "note": (
+            "Конфликт — диагностический сигнал: текущая минус-фраза "
+            "совпала с историческим поисковым запросом этой кампании, "
+            "в котором были отслеживаемые конверсии. Это не доказывает, "
+            "что минус-фраза сейчас блокирует этот запрос: она могла быть "
+            "добавлена позже."
+        ),
+    }
+
+
+def effective_goal_ids(
+    strategy_type,
+    strategy_goal_ids,
+    priority_goals,
+):
+    strategy_type = str(
+        strategy_type
+        or ""
+    ).upper()
+
+    strategy_goal_ids = [
+        str(x)
+        for x in (
+            strategy_goal_ids
+            or []
+        )
+        if str(
+            x
+        ).strip()
+    ]
+
+    priority_ids = [
+        str(
+            x.get(
+                "goal_id"
+            )
+        )
+        for x in (
+            priority_goals
+            or []
+        )
+        if str(
+            x.get(
+                "goal_id"
+            )
+            or ""
+        ).strip()
+    ]
+
+    if "13" in strategy_goal_ids:
+        return (
+            priority_ids,
+            "priority_goals",
+        )
+
+    direct = [
+        x
+        for x in strategy_goal_ids
+        if x != "13"
+    ]
+
+    if direct:
+        return (
+            direct,
+            "strategy_goal",
+        )
+
+    if (
+        "MULTIPLE_GOALS"
+        in strategy_type
+        or "MAX_PROFIT"
+        in strategy_type
+    ):
+        return (
+            priority_ids,
+            "priority_goals",
+        )
+
+    if strategy_type in (
+        "WB_MAXIMUM_CLICKS",
+        "AVERAGE_CPC",
+        "HIGHEST_POSITION",
+        "NETWORK_DEFAULT",
+        "SERVING_OFF",
+    ):
+        return (
+            [],
+            "no_conversion_goal",
+        )
+
+    # Если в кампании присутствуют PriorityGoals, но конкретный
+    # GoalId не вернулся, показываем их как цели автоматической
+    # корректировки, не выдавая их за доказанный strategy GoalId.
+    if priority_ids:
+        return (
+            priority_ids,
+            "priority_goals_adjustment",
+        )
+
+    return (
+        [],
+        "unknown",
+    )
+
+
+def build_priority_goals_intelligence(
+    campaign_configuration,
+    strategy_configuration,
+):
+    portfolio_map = {
+        str(
+            item.get(
+                "id"
+            )
+        ): item
+        for item in (
+            strategy_configuration.get(
+                "rows",
+                []
+            )
+        )
+    }
+
+    rows = []
+
+    for campaign in (
+        campaign_configuration.get(
+            "campaigns",
+            []
+        )
+    ):
+        bidding = (
+            campaign.get(
+                "bidding_strategy",
+                {}
+            )
+            or {}
+        )
+
+        package_strategy_id = (
+            campaign.get(
+                "package_strategy_id"
+            )
+        )
+
+        package_platforms = (
+            campaign.get(
+                "package_strategy_platforms",
+                {}
+            )
+            or {}
+        )
+
+        portfolio = (
+            portfolio_map.get(
+                str(
+                    package_strategy_id
+                )
+            )
+            if package_strategy_id
+            else None
+        )
+
+        for channel_key, channel_label in (
+            ("Search", "Поиск"),
+            ("Network", "РСЯ"),
+        ):
+            channel = (
+                bidding.get(
+                    channel_key
+                )
+                or {}
+            )
+
+            strategy_type = (
+                channel.get(
+                    "BiddingStrategyType"
+                )
+                or ""
+            )
+
+            package_applies = False
+
+            if portfolio:
+                if channel_key == "Network":
+                    package_applies = (
+                        package_platforms.get(
+                            "Network"
+                        )
+                        == "YES"
+                    )
+                else:
+                    package_applies = any(
+                        package_platforms.get(
+                            key
+                        )
+                        == "YES"
+                        for key in (
+                            "SearchResult",
+                            "SearchResults",
+                            "ProductGallery",
+                            "DynamicPlaces",
+                            "Maps",
+                            "SearchOrganizationList",
+                        )
+                    )
+
+            if package_applies:
+                strategy_type = (
+                    portfolio.get(
+                        "type"
+                    )
+                    or strategy_type
+                )
+
+                priority_goals = (
+                    portfolio.get(
+                        "priority_goals",
+                        []
+                    )
+                )
+
+                strategy_goal_ids = (
+                    portfolio.get(
+                        "strategy_goal_ids",
+                        []
+                    )
+                )
+
+                attribution_model = (
+                    portfolio.get(
+                        "attribution_model"
+                    )
+                    or campaign.get(
+                        "attribution_model"
+                    )
+                )
+
+                strategy_source = (
+                    "portfolio"
+                )
+
+                strategy_name = (
+                    portfolio.get(
+                        "name"
+                    )
+                    or ""
+                )
+
+            else:
+                priority_goals = (
+                    campaign.get(
+                        "priority_goals",
+                        []
+                    )
+                )
+
+                strategy_goal_ids = (
+                    extract_goal_ids_recursive(
+                        channel
+                    )
+                )
+
+                attribution_model = (
+                    campaign.get(
+                        "attribution_model"
+                    )
+                )
+
+                strategy_source = (
+                    "campaign"
+                )
+
+                strategy_name = ""
+
+            if (
+                not strategy_type
+                and not priority_goals
+                and not strategy_goal_ids
+            ):
+                continue
+
+            goal_ids, goal_source = (
+                effective_goal_ids(
+                    strategy_type,
+                    strategy_goal_ids,
+                    priority_goals,
+                )
+            )
+
+            priority_value_map = {
+                str(
+                    item.get(
+                        "goal_id"
+                    )
+                ): item
+                for item in (
+                    priority_goals
+                    or []
+                )
+            }
+
+            goals = []
+
+            for goal_id in goal_ids:
+                meta = (
+                    priority_value_map.get(
+                        str(
+                            goal_id
+                        )
+                    )
+                    or {}
+                )
+
+                goals.append({
+                    "goal_id": str(
+                        goal_id
+                    ),
+                    "goal_name": (
+                        readable_goal_name(
+                            goal_id
+                        )
+                    ),
+                    "value_currency": (
+                        meta.get(
+                            "value_currency",
+                            0
+                        )
+                    ),
+                    "is_metrika_source_of_value": (
+                        meta.get(
+                            "is_metrika_source_of_value"
+                        )
+                    ),
+                })
+
+            rows.append({
+                "campaign_id": (
+                    campaign["id"]
+                ),
+                "campaign_name": (
+                    campaign["name"]
+                ),
+                "campaign_state": (
+                    campaign["state"]
+                ),
+                "channel": channel_label,
+                "strategy_type": (
+                    strategy_type
+                ),
+                "strategy_source": (
+                    strategy_source
+                ),
+                "portfolio_strategy_id": (
+                    str(
+                        package_strategy_id
+                    )
+                    if package_applies
+                    else None
+                ),
+                "portfolio_strategy_name": (
+                    strategy_name
+                ),
+                "attribution_model": (
+                    attribution_model
+                ),
+                "goal_source": goal_source,
+                "optimization_goals": goals,
+                "priority_goals": (
+                    priority_goals
+                ),
+            })
+
+    rows.sort(
+        key=lambda x: (
+            x[
+                "campaign_name"
+            ],
+            x[
+                "channel"
+            ],
+        )
+    )
+
+    return {
+        "rows": rows,
+        "summary": {
+            "rows": len(
+                rows
+            ),
+            "campaigns": len({
+                x[
+                    "campaign_id"
+                ]
+                for x in rows
+            }),
+            "using_portfolio": sum(
+                1
+                for x in rows
+                if x[
+                    "strategy_source"
+                ]
+                == "portfolio"
+            ),
+            "with_explicit_optimization_goals": sum(
+                1
+                for x in rows
+                if x[
+                    "optimization_goals"
+                ]
+            ),
+            "without_conversion_goal": sum(
+                1
+                for x in rows
+                if x[
+                    "goal_source"
+                ]
+                == "no_conversion_goal"
+            ),
+        },
+        "note": (
+            "Для conversion-стратегий фактическая цель берётся из GoalId. "
+            "GoalId=13 означает использование PriorityGoals. Для портфельных "
+            "стратегий используются настройки Strategies.get. Если GoalId не "
+            "вернулся, но у кампании заданы PriorityGoals, они показываются "
+            "отдельно как цели автоматической корректировки, а не как "
+            "доказанный strategy GoalId."
+        ),
     }
 
 
@@ -3888,7 +5268,10 @@ def build_search_query_intelligence(existing_keywords):
 # ------------------------------------------------------------
 
 def build_placement_intelligence():
-    fields = [
+    # Отдельно получаем goal-specific конверсии и поведенческие
+    # метрики. Так динамические Conversions_<goal> не теряются
+    # из-за комбинации большого числа метрик в одном отчёте.
+    goal_fields = [
         "Placement",
         "ExternalNetworkName",
         "Device",
@@ -3896,15 +5279,12 @@ def build_placement_intelligence():
         "Clicks",
         "Cost",
         "Conversions",
-        "Sessions",
-        "Bounces",
-        "AvgPageviews",
     ]
 
-    text = request_advanced_report(
-        "MR Placements goals v8",
+    goal_text = request_advanced_report(
+        "MR Placements goals v9",
         "CUSTOM_REPORT",
-        fields,
+        goal_fields,
         filters=[{
             "Field": "AdNetworkType",
             "Operator": "EQUALS",
@@ -3918,26 +5298,151 @@ def build_placement_intelligence():
         ],
     )
 
-    rows = parse_header_tsv(
-        text
+    goal_rows = parse_header_tsv(
+        goal_text
     )
+
+    quality_rows = []
+
+    try:
+        quality_fields = [
+            "Placement",
+            "ExternalNetworkName",
+            "Device",
+            "Sessions",
+            "Bounces",
+            "AvgPageviews",
+        ]
+
+        quality_text = request_advanced_report(
+            "MR Placements quality v9",
+            "CUSTOM_REPORT",
+            quality_fields,
+            filters=[{
+                "Field": "AdNetworkType",
+                "Operator": "EQUALS",
+                "Values": ["AD_NETWORK"],
+            }],
+        )
+
+        quality_rows = parse_header_tsv(
+            quality_text
+        )
+
+    except Exception as error:
+        print(
+            "Placement quality metrics skipped:",
+            error,
+            flush=True,
+        )
+
+    quality_map = {}
+
+    for row in quality_rows:
+        key = (
+            str(
+                row.get(
+                    "Placement"
+                )
+                or ""
+            ).strip(),
+            str(
+                row.get(
+                    "ExternalNetworkName"
+                )
+                or ""
+            ).strip(),
+            str(
+                row.get(
+                    "Device"
+                )
+                or ""
+            ).strip(),
+        )
+
+        if key not in quality_map:
+            quality_map[key] = {
+                "sessions": 0,
+                "bounces": 0,
+                "pageviews_weighted": 0.0,
+            }
+
+        q = quality_map[
+            key
+        ]
+
+        sessions = safe_int(
+            row.get(
+                "Sessions"
+            )
+        )
+
+        avg_pageviews = safe_float(
+            row.get(
+                "AvgPageviews"
+            )
+        )
+
+        q["sessions"] += (
+            sessions
+        )
+
+        q["bounces"] += safe_int(
+            row.get(
+                "Bounces"
+            )
+        )
+
+        q[
+            "pageviews_weighted"
+        ] += (
+            avg_pageviews
+            * sessions
+        )
 
     grouped = {}
 
-    for row in rows:
+    goal_column_names = set()
+
+    for row in goal_rows:
+        goal_column_names.update(
+            key
+            for key in row.keys()
+            if str(
+                key
+            ).startswith(
+                "Conversions_"
+            )
+        )
+
         placement = str(
-            row.get("Placement")
+            row.get(
+                "Placement"
+            )
             or ""
         ).strip()
 
-        if not placement or placement in (
-            "-",
-            "--",
+        if (
+            not placement
+            or placement
+            in (
+                "-",
+                "--",
+            )
         ):
             continue
 
         network = str(
-            row.get("ExternalNetworkName")
+            row.get(
+                "ExternalNetworkName"
+            )
+            or ""
+        ).strip()
+
+        device = str(
+            row.get(
+                "Device"
+            )
             or ""
         ).strip()
 
@@ -3948,8 +5453,12 @@ def build_placement_intelligence():
 
         if key not in grouped:
             grouped[key] = {
-                "placement": placement,
-                "external_network": network,
+                "placement": (
+                    placement
+                ),
+                "external_network": (
+                    network
+                ),
                 "devices": set(),
                 "impressions": 0,
                 "clicks": 0,
@@ -3962,41 +5471,39 @@ def build_placement_intelligence():
                 "pageviews_weighted": 0.0,
             }
 
-        item = grouped[key]
-
-        device = str(
-            row.get("Device")
-            or ""
-        ).strip()
+        item = grouped[
+            key
+        ]
 
         if device:
-            item["devices"].add(
+            item[
+                "devices"
+            ].add(
                 device
             )
 
-        sessions = safe_int(
-            row.get("Sessions")
-        )
-        avg_pageviews = safe_float(
-            row.get("AvgPageviews")
+        item[
+            "impressions"
+        ] += safe_int(
+            row.get(
+                "Impressions"
+            )
         )
 
-        item["impressions"] += safe_int(
-            row.get("Impressions")
+        item[
+            "clicks"
+        ] += safe_int(
+            row.get(
+                "Clicks"
+            )
         )
-        item["clicks"] += safe_int(
-            row.get("Clicks")
-        )
-        item["cost"] += safe_float(
-            row.get("Cost")
-        )
-        item["sessions"] += sessions
-        item["bounces"] += safe_int(
-            row.get("Bounces")
-        )
-        item["pageviews_weighted"] += (
-            avg_pageviews
-            * sessions
+
+        item[
+            "cost"
+        ] += safe_float(
+            row.get(
+                "Cost"
+            )
         )
 
         breakdown = (
@@ -4004,56 +5511,140 @@ def build_placement_intelligence():
                 row
             )
         )
+
         for field in (
             "order_conversions",
             "webinar_conversions",
             "survey_conversions",
         ):
-            item[field] += breakdown[field]
+            item[field] += (
+                breakdown[
+                    field
+                ]
+            )
+
+        q = quality_map.get(
+            (
+                placement,
+                network,
+                device,
+            ),
+            {}
+        )
+
+        item[
+            "sessions"
+        ] += safe_int(
+            q.get(
+                "sessions"
+            )
+        )
+
+        item[
+            "bounces"
+        ] += safe_int(
+            q.get(
+                "bounces"
+            )
+        )
+
+        item[
+            "pageviews_weighted"
+        ] += safe_float(
+            q.get(
+                "pageviews_weighted"
+            )
+        )
 
     prelim = []
 
     for item in grouped.values():
         m = metrics_from_values(
-            item["impressions"],
-            item["clicks"],
-            item["cost"],
+            item[
+                "impressions"
+            ],
+            item[
+                "clicks"
+            ],
+            item[
+                "cost"
+            ],
             (
-                item["order_conversions"]
-                + item["webinar_conversions"]
-                + item["survey_conversions"]
+                item[
+                    "order_conversions"
+                ]
+                + item[
+                    "webinar_conversions"
+                ]
+                + item[
+                    "survey_conversions"
+                ]
             ),
-            item["order_conversions"],
-            item["webinar_conversions"],
-            item["survey_conversions"],
+            item[
+                "order_conversions"
+            ],
+            item[
+                "webinar_conversions"
+            ],
+            item[
+                "survey_conversions"
+            ],
         )
 
         bounce_rate = (
-            item["bounces"]
-            / item["sessions"]
+            item[
+                "bounces"
+            ]
+            / item[
+                "sessions"
+            ]
             * 100
-            if item["sessions"]
+            if item[
+                "sessions"
+            ]
             else 0
         )
 
         avg_pageviews = (
-            item["pageviews_weighted"]
-            / item["sessions"]
-            if item["sessions"]
+            item[
+                "pageviews_weighted"
+            ]
+            / item[
+                "sessions"
+            ]
+            if item[
+                "sessions"
+            ]
             else 0
         )
 
         prelim.append({
             **m,
-            "placement": item["placement"],
+            "placement": (
+                item[
+                    "placement"
+                ]
+            ),
             "external_network": (
-                item["external_network"]
+                item[
+                    "external_network"
+                ]
             ),
             "devices": sorted(
-                item["devices"]
+                item[
+                    "devices"
+                ]
             ),
-            "sessions": item["sessions"],
-            "bounces": item["bounces"],
+            "sessions": (
+                item[
+                    "sessions"
+                ]
+            ),
+            "bounces": (
+                item[
+                    "bounces"
+                ]
+            ),
             "bounce_rate": round(
                 bounce_rate,
                 2,
@@ -4064,59 +5655,97 @@ def build_placement_intelligence():
             ),
         })
 
-    # Сильные площадки определяем прежде всего по Order.
     order_cpas = sorted(
-        x["order_cpa"]
+        x[
+            "order_cpa"
+        ]
         for x in prelim
         if (
-            x["order_conversions"] >= 2
-            and x["order_cpa"] > 0
+            x[
+                "order_conversions"
+            ] >= 2
+            and x[
+                "order_cpa"
+            ] > 0
         )
     )
 
     baseline_order_cpa = (
-        median(order_cpas)
+        median(
+            order_cpas
+        )
         if order_cpas
         else 0
     )
 
     for item in prelim:
         if (
-            item["conversions"] == 0
-            and item["clicks"] >= 10
-            and item["cost"] >= 1000
+            item[
+                "conversions"
+            ] == 0
+            and item[
+                "clicks"
+            ] >= 10
+            and item[
+                "cost"
+            ] >= 1000
         ):
-            item["status"] = "waste"
+            item[
+                "status"
+            ] = "waste"
 
         elif (
-            item["sessions"] >= 10
-            and item["bounce_rate"] >= 80
-            and item["conversions"] == 0
+            item[
+                "sessions"
+            ] >= 10
+            and item[
+                "bounce_rate"
+            ] >= 80
+            and item[
+                "conversions"
+            ] == 0
         ):
-            item["status"] = "bad_traffic"
+            item[
+                "status"
+            ] = "bad_traffic"
 
         elif (
             baseline_order_cpa > 0
-            and item["order_conversions"] >= 3
-            and item["order_cpa"]
-            <= baseline_order_cpa * 0.8
+            and item[
+                "order_conversions"
+            ] >= 3
+            and item[
+                "order_cpa"
+            ]
+            <= baseline_order_cpa
+            * 0.8
         ):
-            item["status"] = "strong"
+            item[
+                "status"
+            ] = "strong"
 
         else:
-            item["status"] = "normal"
+            item[
+                "status"
+            ] = "normal"
 
     prelim.sort(
         key=lambda x: (
-            -x["cost"],
-            -x["clicks"],
+            -x[
+                "cost"
+            ],
+            -x[
+                "clicks"
+            ],
         )
     )
 
     waste_rows = [
         x
         for x in prelim
-        if x["status"]
+        if x[
+            "status"
+        ]
         in (
             "waste",
             "bad_traffic",
@@ -4129,6 +5758,15 @@ def build_placement_intelligence():
             "placements": len(
                 prelim
             ),
+            "goal_columns_found": len(
+                goal_column_names
+            ),
+            "goal_data_available": (
+                len(
+                    goal_column_names
+                )
+                > 0
+            ),
             "baseline_order_cpa": round(
                 baseline_order_cpa,
                 2,
@@ -4138,7 +5776,9 @@ def build_placement_intelligence():
             ),
             "waste_candidate_spend": round(
                 sum(
-                    x["cost"]
+                    x[
+                        "cost"
+                    ]
                     for x in waste_rows
                 ),
                 2,
@@ -4146,25 +5786,34 @@ def build_placement_intelligence():
             "strong_placements": sum(
                 1
                 for x in prelim
-                if x["status"] == "strong"
+                if x[
+                    "status"
+                ]
+                == "strong"
             ),
             "order_conversions": round(
                 sum(
-                    x["order_conversions"]
+                    x[
+                        "order_conversions"
+                    ]
                     for x in prelim
                 ),
                 2,
             ),
             "webinar_conversions": round(
                 sum(
-                    x["webinar_conversions"]
+                    x[
+                        "webinar_conversions"
+                    ]
                     for x in prelim
                 ),
                 2,
             ),
             "survey_conversions": round(
                 sum(
-                    x["survey_conversions"]
+                    x[
+                        "survey_conversions"
+                    ]
                     for x in prelim
                 ),
                 2,
@@ -5321,7 +6970,7 @@ def build_report():
         flush=True,
     )
     print(
-        "MARKETING RADAR v8",
+        "MARKETING RADAR v9",
         flush=True,
     )
     print(
@@ -5330,28 +6979,109 @@ def build_report():
     )
 
     print(
-        "\n1/11 Campaign report + goal breakdown",
+        "\n1/15 Campaign report + goal breakdown",
         flush=True,
     )
     campaign_rows = (
         get_campaign_rows()
     )
 
+    campaign_ids = sorted({
+        row[
+            "campaign_id"
+        ]
+        for row in campaign_rows
+        if str(
+            row.get(
+                "campaign_id"
+            )
+            or ""
+        ).strip()
+    })
+
     print(
-        "\n2/11 Keyword report + goal breakdown",
+        "\n2/15 Campaign configuration",
+        flush=True,
+    )
+    campaign_configuration = (
+        optional_module(
+            "Campaign configuration",
+            get_campaign_configuration,
+            {
+                "campaigns": [],
+                "goal_ids": [],
+                "display_campaign_ids": [],
+                "summary": {},
+            },
+        )
+    )
+
+    print(
+        "\n3/15 Portfolio strategy configuration",
+        flush=True,
+    )
+    strategy_configuration = (
+        optional_module(
+            "Portfolio strategies",
+            get_strategy_configuration,
+            {
+                "rows": [],
+                "goal_ids": [],
+                "summary": {},
+            },
+        )
+    )
+
+    print(
+        "\n4/15 Keyword report + goal breakdown",
         flush=True,
     )
     keyword_rows = (
         get_keyword_rows()
     )
+
+    print(
+        "\n5/15 Keyword status/state",
+        flush=True,
+    )
+    keyword_configuration = (
+        optional_module(
+            "Keyword configuration",
+            lambda: get_keyword_configuration(
+                campaign_ids
+            ),
+            {
+                "rows": [],
+                "by_id": {},
+                "summary": {},
+            },
+        )
+    )
+
+    keyword_rows = (
+        enrich_keywords_with_configuration(
+            keyword_rows,
+            keyword_configuration,
+        )
+    )
+
     keyword_summary = (
         summarize_keywords(
             keyword_rows
         )
     )
 
+    keyword_summary[
+        "status_summary"
+    ] = (
+        keyword_configuration.get(
+            "summary",
+            {}
+        )
+    )
+
     print(
-        "\n3/11 Search Query Intelligence",
+        "\n6/15 Search Query Intelligence",
         flush=True,
     )
     search_queries = optional_module(
@@ -5368,7 +7098,29 @@ def build_report():
     )
 
     print(
-        "\n4/11 Placement Intelligence",
+        "\n7/15 Negative keyword audit",
+        flush=True,
+    )
+    negative_keywords = (
+        build_negative_keyword_audit(
+            campaign_configuration,
+            search_queries,
+        )
+    )
+
+    print(
+        "\n8/15 Priority Goals Intelligence",
+        flush=True,
+    )
+    priority_goals = (
+        build_priority_goals_intelligence(
+            campaign_configuration,
+            strategy_configuration,
+        )
+    )
+
+    print(
+        "\n9/15 Placement Intelligence",
         flush=True,
     )
     placements = optional_module(
@@ -5383,7 +7135,7 @@ def build_report():
     )
 
     print(
-        "\n5/11 Geo Intelligence",
+        "\n10/15 Geo Intelligence",
         flush=True,
     )
     geo = optional_module(
@@ -5399,7 +7151,7 @@ def build_report():
     )
 
     print(
-        "\n6/11 Audience Intelligence",
+        "\n11/15 Audience Intelligence",
         flush=True,
     )
     audience = optional_module(
@@ -5414,7 +7166,7 @@ def build_report():
     )
 
     print(
-        "\n7/11 Search Position Economics",
+        "\n12/15 Search Position Economics",
         flush=True,
     )
     positions = optional_module(
@@ -5429,24 +7181,28 @@ def build_report():
     )
 
     print(
-        "\n8/11 Ad performance + goal breakdown",
+        "\n13/15 Ad performance + goal breakdown",
         flush=True,
     )
     ad_rows = get_ad_rows()
 
     ad_ids = sorted({
-        row["ad_id"]
+        row[
+            "ad_id"
+        ]
         for row in ad_rows
     })
 
     print(
         "Unique ads:",
-        len(ad_ids),
+        len(
+            ad_ids
+        ),
         flush=True,
     )
 
     print(
-        "\n9/11 Creative metadata",
+        "\n14/15 Creative metadata + attribution",
         flush=True,
     )
     ads = get_ads(
@@ -5462,33 +7218,38 @@ def build_report():
                 ad
             )
         )
+
         ad_asset_map[
             ad_id
         ] = assets
 
         for asset in assets:
             registry[
-                asset["asset_key"]
+                asset[
+                    "asset_key"
+                ]
             ] = asset
 
-    print(
-        "Unique visual assets:",
-        len(registry),
-        flush=True,
-    )
-
     image_hashes = [
-        asset["asset_id"]
+        asset[
+            "asset_id"
+        ]
         for asset in registry.values()
-        if asset["asset_key"].startswith(
+        if asset[
+            "asset_key"
+        ].startswith(
             "image:"
         )
     ]
 
     creative_ids = [
-        asset["asset_id"]
+        asset[
+            "asset_id"
+        ]
         for asset in registry.values()
-        if asset["asset_key"].startswith(
+        if asset[
+            "asset_key"
+        ].startswith(
             "creative:"
         )
     ]
@@ -5509,10 +7270,6 @@ def build_report():
         else {}
     )
 
-    print(
-        "\n10/11 Creative attribution",
-        flush=True,
-    )
     performances = (
         build_asset_performance(
             ad_rows,
@@ -5532,15 +7289,18 @@ def build_report():
     )
 
     print(
-        "\n11/11 Final summary",
+        "\n15/15 Final summary",
         flush=True,
     )
+
     campaigns = aggregate_campaigns(
         campaign_rows
     )
+
     summary = calculate_summary(
         campaigns
     )
+
     c_summary = creative_summary(
         creatives
     )
@@ -5576,6 +7336,18 @@ def build_report():
                 {}
             )
         ),
+        "priority_goals": (
+            priority_goals.get(
+                "summary",
+                {}
+            )
+        ),
+        "negative_keywords": (
+            negative_keywords.get(
+                "summary",
+                {}
+            )
+        ),
     }
 
     return {
@@ -5585,7 +7357,7 @@ def build_report():
             ).isoformat(),
             "source": "yandex_direct",
             "period_days": REPORT_DAYS,
-            "report_version": 8,
+            "report_version": 9,
             "conversion_attribution_model": (
                 CONVERSION_ATTRIBUTION_MODEL
             ),
@@ -5599,10 +7371,15 @@ def build_report():
                 "поле выводится со значением 0."
             ),
             "creative_method": (
-                "visual_asset_proxy_v5"
+                "exact_proxy_shared_context_v9"
+            ),
+            "creative_shared_proxy_note": (
+                "shared_proxy присваивает статистику responsive-объявления "
+                "каждому присутствующему визуалу. Это контекстная оценка, "
+                "а не доказанная индивидуальная атрибуция."
             ),
             "keyword_method": (
-                "CRITERIA_PERFORMANCE_REPORT_KEYWORD"
+                "CRITERIA_PERFORMANCE_REPORT + Keywords.get"
             ),
             "score_model": (
                 "CTR_60_CPC_40"
@@ -5616,12 +7393,9 @@ def build_report():
                 "geo",
                 "audience",
                 "positions",
+                "priority_goals",
+                "negative_keywords",
             ],
-            "attribution_note": (
-                "exact = статистика выделенного image/video ad; "
-                "proxy = статистика объявления с единственным "
-                "визуальным ассетом"
-            ),
         },
 
         "summary": summary,
@@ -5637,19 +7411,33 @@ def build_report():
         "keyword_summary": (
             keyword_summary
         ),
+        "keyword_configuration": (
+            keyword_configuration
+        ),
+        "negative_keywords": (
+            negative_keywords
+        ),
 
         "search_queries": (
             search_queries
         ),
-        "placements": placements,
+        "placements": (
+            placements
+        ),
         "geo": geo,
         "audience": audience,
         "positions": positions,
+
+        "priority_goals": (
+            priority_goals
+        ),
 
         "advanced_summary": (
             advanced_summary
         ),
     }
+
+
 
 
 # ============================================================
