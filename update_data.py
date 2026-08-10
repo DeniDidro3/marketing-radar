@@ -1,1548 +1,1262 @@
-import os
-import json
-import csv
-import io
-import time
-import base64
-import hashlib
-import secrets
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+let DATA = null;
 
-import requests
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+const fmt =
+  new Intl.NumberFormat("ru-RU");
 
+const money = (v) =>
+  `${fmt.format(
+    Math.round(Number(v || 0))
+  )} ₽`;
 
-# ============================================================
-# CONFIG
-# ============================================================
+const number = (v) =>
+  fmt.format(
+    Math.round(Number(v || 0))
+  );
 
-DIRECT_REPORT_URL = "https://api.direct.yandex.com/json/v501/reports"
-
-TOKEN = os.environ["YANDEX_DIRECT_TOKEN"]
-REPORT_PASSWORD = os.environ["REPORT_PASSWORD"]
-
-ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "data" / "report.enc"
-
-REPORT_DAYS = 60
-
-# Минимум данных для полноценной оценки
-MIN_CLICKS_FOR_SCORE = 15
-
-# Для тренда сравниваем последние 7 дней
-TREND_DAYS = 7
-
-# PBKDF2
-PBKDF2_ITERATIONS = 600_000
+const pct = (v) =>
+  `${Number(v || 0).toFixed(2)}%`;
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+/* =========================================================
+   CRYPTO
+========================================================= */
 
-def safe_float(value, default=0.0):
-    if value is None:
-        return default
+function base64ToBytes(base64) {
+  const binary = atob(base64);
 
-    value = str(value).strip()
+  const bytes =
+    new Uint8Array(
+      binary.length
+    );
 
-    if value in ("", "-", "--", "null", "None"):
-        return default
+  for (
+    let i = 0;
+    i < binary.length;
+    i++
+  ) {
+    bytes[i] =
+      binary.charCodeAt(i);
+  }
 
-    value = value.replace(",", ".")
-
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def safe_int(value, default=0):
-    if value is None:
-        return default
-
-    value = str(value).strip()
-
-    if value in ("", "-", "--", "null", "None"):
-        return default
-
-    try:
-        return int(float(value))
-    except (ValueError, TypeError):
-        return default
+  return bytes;
+}
 
 
-def clamp(value, minimum, maximum):
-    return max(
-        minimum,
-        min(maximum, value)
+async function deriveKey(
+  password,
+  salt,
+  iterations
+) {
+  const encoder =
+    new TextEncoder();
+
+  const keyMaterial =
+    await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(password),
+      "PBKDF2",
+      false,
+      ["deriveKey"]
+    );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt,
+      iterations,
+      hash: "SHA-256",
+    },
+
+    keyMaterial,
+
+    {
+      name: "AES-GCM",
+      length: 256,
+    },
+
+    false,
+
+    ["decrypt"]
+  );
+}
+
+
+async function decryptPayload(
+  payload,
+  password
+) {
+  const salt =
+    base64ToBytes(
+      payload.salt
+    );
+
+  const nonce =
+    base64ToBytes(
+      payload.nonce
+    );
+
+  const ciphertext =
+    base64ToBytes(
+      payload.ciphertext
+    );
+
+  const key =
+    await deriveKey(
+      password,
+      salt,
+      payload.iterations
+    );
+
+  const plaintext =
+    await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: nonce,
+      },
+      key,
+      ciphertext
+    );
+
+  return JSON.parse(
+    new TextDecoder().decode(
+      plaintext
     )
+  );
+}
 
 
-def percent_change(current, previous):
-    if previous <= 0:
-        return 0.0
+async function loadEncryptedReport(
+  password
+) {
+  const response =
+    await fetch(
+      `data/report.enc?t=${Date.now()}`
+    );
 
-    return (
-        (current - previous)
-        / previous
-        * 100
-    )
+  if (!response.ok) {
+    throw new Error(
+      `HTTP ${response.status}`
+    );
+  }
+
+  const payload =
+    await response.json();
+
+  return decryptPayload(
+    payload,
+    password
+  );
+}
 
 
-# ============================================================
-# DIRECT REPORT REQUEST
-# ============================================================
+/* =========================================================
+   LOGIN
+========================================================= */
 
-def request_direct_report(
-    report_name,
-    report_type,
-    fields,
-):
-    today = datetime.now(timezone.utc).date()
+function showLogin() {
+  document.body.insertAdjacentHTML(
+    "beforeend",
+    `
+    <div
+      id="loginOverlay"
+      style="
+        position:fixed;
+        inset:0;
+        z-index:99999;
+        background:#07111f;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        padding:24px;
+      "
+    >
+      <div style="
+        width:100%;
+        max-width:400px;
+        padding:32px;
+        border:1px solid #20354e;
+        border-radius:18px;
+        background:#0e1c2e;
+      ">
 
-    date_from = today - timedelta(
-        days=REPORT_DAYS
-    )
+        <div style="
+          font-size:11px;
+          letter-spacing:.12em;
+          color:#5aa7ff;
+          margin-bottom:10px;
+        ">
+          MARKETING RADAR
+        </div>
 
-    date_to = today - timedelta(
-        days=1
-    )
+        <h2 style="
+          margin:0 0 8px;
+        ">
+          Доступ к аналитике
+        </h2>
 
-    headers = {
-        "Authorization": f"Bearer {TOKEN}",
-        "Accept-Language": "ru",
-        "processingMode": "auto",
-        "returnMoneyInMicros": "false",
-        "skipReportHeader": "true",
-        "skipColumnHeader": "true",
-        "skipReportSummary": "true",
+        <p style="
+          color:#8ea2bb;
+          font-size:13px;
+          line-height:1.5;
+        ">
+          Введите пароль для
+          расшифровки рекламных данных.
+        </p>
+
+        <input
+          id="reportPassword"
+          type="password"
+          placeholder="Пароль"
+          style="
+            width:100%;
+            padding:13px;
+            border-radius:9px;
+            border:1px solid #20354e;
+            background:#091525;
+            color:white;
+            margin-top:12px;
+          "
+        >
+
+        <div
+          id="loginError"
+          style="
+            color:#ff6b72;
+            font-size:11px;
+            min-height:18px;
+            margin-top:8px;
+          "
+        ></div>
+
+        <button
+          id="loginButton"
+          style="
+            width:100%;
+            padding:13px;
+            margin-top:8px;
+            border:0;
+            border-radius:9px;
+            background:#3e9df8;
+            color:white;
+            font-weight:600;
+            cursor:pointer;
+          "
+        >
+          Войти
+        </button>
+
+      </div>
+    </div>
+    `
+  );
+
+  const input =
+    document.getElementById(
+      "reportPassword"
+    );
+
+  const button =
+    document.getElementById(
+      "loginButton"
+    );
+
+  async function login() {
+    const password =
+      input.value;
+
+    if (!password) {
+      return;
     }
 
-    body = {
-        "params": {
-            "SelectionCriteria": {
-                "DateFrom": date_from.isoformat(),
-                "DateTo": date_to.isoformat(),
-            },
+    button.disabled = true;
 
-            "FieldNames": fields,
+    button.textContent =
+      "Расшифровка...";
 
-            "OrderBy": [
-                {
-                    "Field": "Date",
-                    "SortOrder": "ASCENDING",
-                }
-            ],
+    try {
+      DATA =
+        await loadEncryptedReport(
+          password
+        );
 
-            "ReportName": report_name,
-            "ReportType": report_type,
-            "DateRangeType": "CUSTOM_DATE",
-            "Format": "TSV",
-            "IncludeVAT": "YES",
-            "IncludeDiscount": "YES",
-        }
+      sessionStorage.setItem(
+        "marketingRadarPassword",
+        password
+      );
+
+      document
+        .getElementById(
+          "loginOverlay"
+        )
+        .remove();
+
+      render();
+
+    } catch (error) {
+
+      console.error(error);
+
+      document
+        .getElementById(
+          "loginError"
+        )
+        .textContent =
+          "Неверный пароль.";
+
+      button.disabled = false;
+
+      button.textContent =
+        "Войти";
     }
-
-    max_attempts = 20
-
-    for attempt in range(
-        1,
-        max_attempts + 1
-    ):
-        print(
-            f"[{attempt}/{max_attempts}] "
-            f"{report_name}: "
-            f"{date_from} — {date_to}",
-            flush=True,
-        )
-
-        response = requests.post(
-            DIRECT_REPORT_URL,
-            headers=headers,
-            json=body,
-            timeout=120,
-        )
-
-        print(
-            f"HTTP {response.status_code}",
-            flush=True,
-        )
-
-        if response.status_code == 200:
-            print(
-                f"{report_name}: received.",
-                flush=True,
-            )
-
-            return response.text
-
-        if response.status_code in (
-            201,
-            202,
-        ):
-            retry_in = int(
-                response.headers.get(
-                    "retryIn",
-                    "10"
-                )
-            )
-
-            print(
-                f"Report not ready. "
-                f"Retry in {retry_in}s.",
-                flush=True,
-            )
-
-            time.sleep(retry_in)
-            continue
-
-        print(
-            response.text,
-            flush=True,
-        )
-
-        raise RuntimeError(
-            f"Direct API returned "
-            f"HTTP {response.status_code}"
-        )
-
-    raise RuntimeError(
-        f"{report_name} was not ready "
-        f"after {max_attempts} attempts."
-    )
-
-
-# ============================================================
-# CAMPAIGN REPORT
-# ============================================================
-
-def get_campaign_report():
-    fields = [
-        "Date",
-        "CampaignId",
-        "CampaignName",
-        "Impressions",
-        "Clicks",
-        "Cost",
-        "Ctr",
-        "AvgCpc",
-    ]
-
-    text = request_direct_report(
-        report_name=(
-            "Marketing Radar Campaign Report"
-        ),
-        report_type=(
-            "CAMPAIGN_PERFORMANCE_REPORT"
-        ),
-        fields=fields,
-    )
-
-    return parse_campaign_tsv(
-        text,
-        fields,
-    )
-
-
-def parse_campaign_tsv(
-    text,
-    fields,
-):
-    reader = csv.reader(
-        io.StringIO(text),
-        delimiter="\t",
-    )
-
-    rows = []
-
-    for values in reader:
-        if not values:
-            continue
-
-        if len(values) < len(fields):
-            continue
-
-        row = dict(
-            zip(fields, values)
-        )
-
-        rows.append({
-            "date": row.get(
-                "Date",
-                ""
-            ),
-
-            "campaign_id": row.get(
-                "CampaignId",
-                ""
-            ),
-
-            "campaign_name": row.get(
-                "CampaignName",
-                ""
-            ),
-
-            "impressions": safe_int(
-                row.get("Impressions")
-            ),
-
-            "clicks": safe_int(
-                row.get("Clicks")
-            ),
-
-            "cost": safe_float(
-                row.get("Cost")
-            ),
-
-            "ctr": safe_float(
-                row.get("Ctr")
-            ),
-
-            "avg_cpc": safe_float(
-                row.get("AvgCpc")
-            ),
-        })
-
-    return rows
-
-
-# ============================================================
-# AD / CREATIVE REPORT
-# ============================================================
-
-def get_ad_report():
-    fields = [
-        "Date",
-
-        "CampaignId",
-        "CampaignName",
-
-        "AdGroupId",
-        "AdGroupName",
-
-        "AdId",
-
-        "AdNetworkType",
-        "AdFormat",
-
-        "Impressions",
-        "Clicks",
-        "Cost",
-        "Ctr",
-        "AvgCpc",
-    ]
-
-    text = request_direct_report(
-        report_name=(
-            "Marketing Radar Ad Report"
-        ),
-        report_type=(
-            "AD_PERFORMANCE_REPORT"
-        ),
-        fields=fields,
-    )
-
-    return parse_ad_tsv(
-        text,
-        fields,
-    )
-
-
-def parse_ad_tsv(
-    text,
-    fields,
-):
-    reader = csv.reader(
-        io.StringIO(text),
-        delimiter="\t",
-    )
-
-    rows = []
-
-    for values in reader:
-        if not values:
-            continue
-
-        if len(values) < len(fields):
-            continue
-
-        row = dict(
-            zip(fields, values)
-        )
-
-        ad_id = row.get(
-            "AdId",
-            ""
-        )
-
-        if not ad_id:
-            continue
-
-        rows.append({
-            "date": row.get(
-                "Date",
-                ""
-            ),
-
-            "campaign_id": row.get(
-                "CampaignId",
-                ""
-            ),
-
-            "campaign_name": row.get(
-                "CampaignName",
-                ""
-            ),
-
-            "ad_group_id": row.get(
-                "AdGroupId",
-                ""
-            ),
-
-            "ad_group_name": row.get(
-                "AdGroupName",
-                ""
-            ),
-
-            "ad_id": ad_id,
-
-            "network": row.get(
-                "AdNetworkType",
-                "UNKNOWN"
-            ),
-
-            "format": row.get(
-                "AdFormat",
-                "UNKNOWN"
-            ),
-
-            "impressions": safe_int(
-                row.get("Impressions")
-            ),
-
-            "clicks": safe_int(
-                row.get("Clicks")
-            ),
-
-            "cost": safe_float(
-                row.get("Cost")
-            ),
-
-            "ctr": safe_float(
-                row.get("Ctr")
-            ),
-
-            "avg_cpc": safe_float(
-                row.get("AvgCpc")
-            ),
-        })
-
-    print(
-        f"Ad daily rows: {len(rows)}",
-        flush=True,
-    )
-
-    return rows
-
-
-# ============================================================
-# CAMPAIGN AGGREGATION
-# ============================================================
-
-def aggregate_campaigns(rows):
-    campaigns = {}
-
-    for row in rows:
-        cid = row["campaign_id"]
-
-        if not cid:
-            continue
-
-        if cid not in campaigns:
-            campaigns[cid] = {
-                "campaign_id": cid,
-                "name": row[
-                    "campaign_name"
-                ],
-                "impressions": 0,
-                "clicks": 0,
-                "spend": 0.0,
-            }
-
-        item = campaigns[cid]
-
-        item["impressions"] += (
-            row["impressions"]
-        )
-
-        item["clicks"] += (
-            row["clicks"]
-        )
-
-        item["spend"] += (
-            row["cost"]
-        )
-
-    result = []
-
-    for item in campaigns.values():
-        impressions = item[
-            "impressions"
-        ]
-
-        clicks = item[
-            "clicks"
-        ]
-
-        spend = item[
-            "spend"
-        ]
-
-        ctr = (
-            clicks
-            / impressions
-            * 100
-            if impressions
-            else 0
-        )
-
-        cpc = (
-            spend / clicks
-            if clicks
-            else 0
-        )
-
-        result.append({
-            **item,
-
-            "spend": round(
-                spend,
-                2
-            ),
-
-            "ctr": round(
-                ctr,
-                2
-            ),
-
-            "avg_cpc": round(
-                cpc,
-                2
-            ),
-        })
-
-    result.sort(
-        key=lambda x: x["spend"],
-        reverse=True,
-    )
-
-    return result
-
-
-# ============================================================
-# CREATIVE AGGREGATION
-# ============================================================
-
-def aggregate_ads(rows):
-    ads = {}
-
-    for row in rows:
-        # Один AdId отдельно для Search / Network
-        key = (
-            row["ad_id"],
-            row["network"],
-        )
-
-        if key not in ads:
-            ads[key] = {
-                "ad_id": row["ad_id"],
-
-                "campaign_id": (
-                    row["campaign_id"]
-                ),
-
-                "campaign_name": (
-                    row["campaign_name"]
-                ),
-
-                "ad_group_id": (
-                    row["ad_group_id"]
-                ),
-
-                "ad_group_name": (
-                    row["ad_group_name"]
-                ),
-
-                "network": (
-                    row["network"]
-                ),
-
-                "format": (
-                    row["format"]
-                ),
-
-                "impressions": 0,
-                "clicks": 0,
-                "spend": 0.0,
-
-                "daily": [],
-            }
-
-        item = ads[key]
-
-        item["impressions"] += (
-            row["impressions"]
-        )
-
-        item["clicks"] += (
-            row["clicks"]
-        )
-
-        item["spend"] += (
-            row["cost"]
-        )
-
-        item["daily"].append(row)
-
-    result = []
-
-    for item in ads.values():
-        impressions = item[
-            "impressions"
-        ]
-
-        clicks = item[
-            "clicks"
-        ]
-
-        spend = item[
-            "spend"
-        ]
-
-        ctr = (
-            clicks
-            / impressions
-            * 100
-            if impressions
-            else 0
-        )
-
-        cpc = (
-            spend / clicks
-            if clicks
-            else 0
-        )
-
-        item["spend"] = round(
-            spend,
-            2
-        )
-
-        item["ctr"] = round(
-            ctr,
-            3
-        )
-
-        item["avg_cpc"] = round(
-            cpc,
-            2
-        )
-
-        result.append(item)
-
-    return result
-
-
-# ============================================================
-# CREATIVE BASELINES
-# ============================================================
-
-def calculate_creative_baselines(
-    creatives
-):
-    groups = defaultdict(
-        lambda: {
-            "impressions": 0,
-            "clicks": 0,
-            "spend": 0.0,
-        }
-    )
-
-    for ad in creatives:
-        key = (
-            ad["campaign_id"],
-            ad["network"],
-        )
-
-        group = groups[key]
-
-        group["impressions"] += (
-            ad["impressions"]
-        )
-
-        group["clicks"] += (
-            ad["clicks"]
-        )
-
-        group["spend"] += (
-            ad["spend"]
-        )
-
-    baselines = {}
-
-    for key, group in groups.items():
-        impressions = group[
-            "impressions"
-        ]
-
-        clicks = group[
-            "clicks"
-        ]
-
-        spend = group[
-            "spend"
-        ]
-
-        ctr = (
-            clicks
-            / impressions
-            * 100
-            if impressions
-            else 0
-        )
-
-        cpc = (
-            spend / clicks
-            if clicks
-            else 0
-        )
-
-        baselines[key] = {
-            "ctr": ctr,
-            "cpc": cpc,
+  }
+
+  button.addEventListener(
+    "click",
+    login
+  );
+
+  input.addEventListener(
+    "keydown",
+    event => {
+      if (
+        event.key === "Enter"
+      ) {
+        login();
+      }
+    }
+  );
+
+  input.focus();
+}
+
+
+async function start() {
+  const password =
+    sessionStorage.getItem(
+      "marketingRadarPassword"
+    );
+
+  if (password) {
+    try {
+      DATA =
+        await loadEncryptedReport(
+          password
+        );
+
+      render();
+
+      return;
+
+    } catch {
+      sessionStorage.removeItem(
+        "marketingRadarPassword"
+      );
+    }
+  }
+
+  showLogin();
+}
+
+
+/* =========================================================
+   MAIN RENDER
+========================================================= */
+
+function render() {
+  renderMeta();
+  renderHero();
+  renderKPIs();
+  renderCampaignTable();
+  renderDirectSummary();
+  renderCreativeSummary();
+  renderCreatives();
+}
+
+
+/* =========================================================
+   META
+========================================================= */
+
+function renderMeta() {
+  const updated =
+    formatDate(
+      DATA.meta?.updated_at
+    );
+
+  const sidebar =
+    document.getElementById(
+      "sidebarUpdated"
+    );
+
+  const footer =
+    document.getElementById(
+      "footerUpdated"
+    );
+
+  if (sidebar) {
+    sidebar.textContent =
+      updated;
+  }
+
+  if (footer) {
+    footer.textContent =
+      `Обновлено ${updated}`;
+  }
+
+  const badge =
+    document.getElementById(
+      "navAlertCount"
+    );
+
+  if (badge) {
+    badge.textContent = "—";
+  }
+}
+
+
+/* =========================================================
+   HERO
+========================================================= */
+
+function renderHero() {
+  const s =
+    DATA.summary || {};
+
+  document.getElementById(
+    "heroHeadline"
+  ).textContent =
+    "Данные Яндекс Директа обновлены";
+
+  document.getElementById(
+    "heroCopy"
+  ).textContent =
+    `${DATA.campaigns?.length || 0} кампаний, ` +
+    `${number(s.clicks)} кликов, ` +
+    `${money(s.spend)} расходов`;
+
+  document.getElementById(
+    "healthScore"
+  ).textContent =
+    "LIVE";
+}
+
+
+/* =========================================================
+   KPI
+========================================================= */
+
+function renderKPIs() {
+  const s =
+    DATA.summary || {};
+
+  const items = [
+    [
+      "Расход",
+      money(s.spend)
+    ],
+
+    [
+      "Показы",
+      number(
+        s.impressions
+      )
+    ],
+
+    [
+      "Клики",
+      number(
+        s.clicks
+      )
+    ],
+
+    [
+      "CTR",
+      pct(s.ctr)
+    ],
+  ];
+
+  document.getElementById(
+    "kpis"
+  ).innerHTML =
+    items.map(
+      ([label, value]) => `
+        <div class="kpi">
+
+          <div class="label">
+            ${label}
+          </div>
+
+          <div class="value">
+            ${value}
+          </div>
+
+          <div class="delta neutral">
+            за выбранный период
+          </div>
+
+        </div>
+      `
+    ).join("");
+}
+
+
+/* =========================================================
+   CAMPAIGNS
+========================================================= */
+
+function renderCampaignTable() {
+  const campaigns =
+    [...(
+      DATA.campaigns || []
+    )];
+
+  campaigns.sort(
+    (a, b) =>
+      b.spend - a.spend
+  );
+
+  document.getElementById(
+    "campaignTable"
+  ).innerHTML = `
+    <table class="table">
+
+      <thead>
+        <tr>
+          <th>Кампания</th>
+          <th>Расход</th>
+          <th>Показы</th>
+          <th>Клики</th>
+          <th>CTR</th>
+          <th>CPC</th>
+        </tr>
+      </thead>
+
+      <tbody>
+
+        ${
+          campaigns.map(
+            c => `
+              <tr>
+
+                <td>
+                  ${escapeHtml(
+                    c.name
+                  )}
+                </td>
+
+                <td>
+                  ${money(
+                    c.spend
+                  )}
+                </td>
+
+                <td>
+                  ${number(
+                    c.impressions
+                  )}
+                </td>
+
+                <td>
+                  ${number(
+                    c.clicks
+                  )}
+                </td>
+
+                <td>
+                  ${pct(
+                    c.ctr
+                  )}
+                </td>
+
+                <td>
+                  ${money(
+                    c.avg_cpc
+                  )}
+                </td>
+
+              </tr>
+            `
+          ).join("")
         }
 
-    return baselines
+      </tbody>
 
+    </table>
+  `;
+}
 
-# ============================================================
-# CREATIVE TREND
-# ============================================================
 
-def aggregate_period(
-    rows,
-    start_date,
-    end_date,
-):
-    impressions = 0
-    clicks = 0
-    spend = 0.0
+/* =========================================================
+   DIRECT SUMMARY
+========================================================= */
 
-    for row in rows:
-        try:
-            row_date = (
-                datetime.strptime(
-                    row["date"],
-                    "%Y-%m-%d"
-                ).date()
-            )
-        except Exception:
-            continue
+function renderDirectSummary() {
+  const campaigns =
+    [...(
+      DATA.campaigns || []
+    )];
 
-        if (
-            start_date
-            <= row_date
-            <= end_date
-        ):
-            impressions += (
-                row["impressions"]
-            )
-
-            clicks += (
-                row["clicks"]
-            )
-
-            spend += (
-                row["cost"]
-            )
-
-    ctr = (
-        clicks
-        / impressions
-        * 100
-        if impressions
-        else 0
-    )
-
-    cpc = (
-        spend / clicks
-        if clicks
-        else 0
-    )
-
-    return {
-        "impressions": impressions,
-        "clicks": clicks,
-        "spend": spend,
-        "ctr": ctr,
-        "cpc": cpc,
-    }
-
-
-def calculate_creative_trend(ad):
-    today = datetime.now(
-        timezone.utc
-    ).date()
-
-    current_end = (
-        today
-        - timedelta(days=1)
-    )
-
-    current_start = (
-        current_end
-        - timedelta(
-            days=TREND_DAYS - 1
-        )
-    )
-
-    previous_end = (
-        current_start
-        - timedelta(days=1)
-    )
-
-    previous_start = (
-        previous_end
-        - timedelta(
-            days=TREND_DAYS - 1
-        )
-    )
-
-    current = aggregate_period(
-        ad["daily"],
-        current_start,
-        current_end,
-    )
-
-    previous = aggregate_period(
-        ad["daily"],
-        previous_start,
-        previous_end,
-    )
-
-    ctr_change = percent_change(
-        current["ctr"],
-        previous["ctr"],
-    )
-
-    cpc_change = percent_change(
-        current["cpc"],
-        previous["cpc"],
-    )
-
-    trend_status = "stable"
-
-    # Недостаточно данных именно по тренду
-    if (
-        current["clicks"] < 5
-        or previous["clicks"] < 5
-    ):
-        trend_status = (
-            "insufficient_data"
-        )
-
-    elif (
-        ctr_change <= -20
-        and cpc_change >= 15
-    ):
-        trend_status = "fatigue"
-
-    elif (
-        ctr_change >= 20
-        and cpc_change <= -10
-    ):
-        trend_status = "improving"
-
-    elif ctr_change <= -20:
-        trend_status = (
-            "ctr_declining"
-        )
-
-    elif cpc_change >= 20:
-        trend_status = (
-            "cpc_growing"
-        )
-
-    return {
-        "current_7d": {
-            "impressions": (
-                current["impressions"]
-            ),
-            "clicks": (
-                current["clicks"]
-            ),
-            "spend": round(
-                current["spend"],
-                2
-            ),
-            "ctr": round(
-                current["ctr"],
-                3
-            ),
-            "cpc": round(
-                current["cpc"],
-                2
-            ),
-        },
-
-        "previous_7d": {
-            "impressions": (
-                previous[
-                    "impressions"
-                ]
-            ),
-            "clicks": (
-                previous["clicks"]
-            ),
-            "spend": round(
-                previous["spend"],
-                2
-            ),
-            "ctr": round(
-                previous["ctr"],
-                3
-            ),
-            "cpc": round(
-                previous["cpc"],
-                2
-            ),
-        },
-
-        "ctr_change": round(
-            ctr_change,
-            1
-        ),
-
-        "cpc_change": round(
-            cpc_change,
-            1
-        ),
-
-        "status": trend_status,
-    }
-
-
-# ============================================================
-# CREATIVE SCORE
-# ============================================================
-
-def calculate_creative_score(
-    ad,
-    baseline,
-):
-    clicks = ad["clicks"]
-
-    if clicks < MIN_CLICKS_FOR_SCORE:
-        return {
-            "score": None,
-            "status": (
-                "insufficient_data"
-            ),
-            "reason": (
-                "Недостаточно кликов "
-                "для уверенной оценки"
-            ),
-        }
-
-    ad_ctr = ad["ctr"]
-    ad_cpc = ad["avg_cpc"]
-
-    baseline_ctr = (
-        baseline["ctr"]
-    )
-
-    baseline_cpc = (
-        baseline["cpc"]
-    )
-
-    # Индекс CTR:
-    # 1.0 = среднее кампании
-    ctr_index = (
-        ad_ctr / baseline_ctr
-        if baseline_ctr > 0
-        else 1
-    )
-
-    # Индекс CPC:
-    # > 1 означает дешевле среднего
-    cpc_index = (
-        baseline_cpc / ad_cpc
-        if ad_cpc > 0
-        else 1
-    )
-
-    # Ограничиваем влияние экстремальных значений
-    ctr_index = clamp(
-        ctr_index,
-        0.4,
-        1.8
-    )
-
-    cpc_index = clamp(
-        cpc_index,
-        0.4,
-        1.8
-    )
-
-    # Базовая точка = 50.
-    # CTR важнее CPC.
-    score = (
-        50
-        + (ctr_index - 1) * 45
-        + (cpc_index - 1) * 30
-    )
-
-    # Немного учитываем объём:
-    # 15 кликов = минимум,
-    # 100+ = высокая уверенность.
-    confidence_bonus = (
-        min(clicks, 100)
-        / 100
-        * 5
-    )
-
-    score += confidence_bonus
-
-    score = int(
-        round(
-            clamp(
-                score,
-                0,
-                100
-            )
-        )
-    )
-
-    if score >= 70:
-        status = "successful"
-        reason = (
-            "Эффективнее среднего "
-            "по кампании"
-        )
-
-    elif score >= 45:
-        status = "normal"
-        reason = (
-            "Показатели близки "
-            "к средним"
-        )
-
-    else:
-        status = "weak"
-        reason = (
-            "Уступает сопоставимым "
-            "объявлениям"
-        )
-
-    return {
-        "score": score,
-        "status": status,
-        "reason": reason,
-        "ctr_index": round(
-            ctr_index,
-            2
-        ),
-        "cpc_index": round(
-            cpc_index,
-            2
-        ),
-    }
-
-
-# ============================================================
-# ENRICH CREATIVES
-# ============================================================
-
-def analyze_creatives(
-    creatives
-):
-    baselines = (
-        calculate_creative_baselines(
-            creatives
-        )
-    )
-
-    analyzed = []
-
-    for ad in creatives:
-        key = (
-            ad["campaign_id"],
-            ad["network"],
-        )
-
-        baseline = baselines.get(
-            key,
-            {
-                "ctr": 0,
-                "cpc": 0,
-            }
-        )
-
-        score_data = (
-            calculate_creative_score(
-                ad,
-                baseline,
-            )
-        )
-
-        trend = (
-            calculate_creative_trend(
-                ad
-            )
-        )
-
-        # Если креатив формально хороший,
-        # но уже выгорает — это важный сигнал.
-        final_status = (
-            score_data["status"]
-        )
-
-        if trend["status"] == "fatigue":
-            final_status = "fatigue"
-
-        elif (
-            trend["status"]
-            == "improving"
-            and score_data["status"]
-            in (
-                "normal",
-                "successful",
-            )
-        ):
-            final_status = (
-                "improving"
-            )
-
-        analyzed.append({
-            "ad_id": ad["ad_id"],
-
-            "campaign_id": (
-                ad["campaign_id"]
-            ),
-
-            "campaign_name": (
-                ad["campaign_name"]
-            ),
-
-            "ad_group_id": (
-                ad["ad_group_id"]
-            ),
-
-            "ad_group_name": (
-                ad["ad_group_name"]
-            ),
-
-            "network": (
-                ad["network"]
-            ),
-
-            "format": (
-                ad["format"]
-            ),
-
-            "impressions": (
-                ad["impressions"]
-            ),
-
-            "clicks": (
-                ad["clicks"]
-            ),
-
-            "spend": (
-                ad["spend"]
-            ),
-
-            "ctr": (
-                ad["ctr"]
-            ),
-
-            "avg_cpc": (
-                ad["avg_cpc"]
-            ),
-
-            "baseline_ctr": round(
-                baseline["ctr"],
-                3
-            ),
-
-            "baseline_cpc": round(
-                baseline["cpc"],
-                2
-            ),
-
-            "score": score_data[
-                "score"
-            ],
-
-            "status": final_status,
-
-            "score_status": (
-                score_data["status"]
-            ),
-
-            "reason": (
-                score_data["reason"]
-            ),
-
-            "ctr_index": (
-                score_data.get(
-                    "ctr_index"
-                )
-            ),
-
-            "cpc_index": (
-                score_data.get(
-                    "cpc_index"
-                )
-            ),
-
-            "trend": trend,
-        })
-
-    # Самые важные наверх:
-    # fatigue → weak → successful
-    priority = {
-        "fatigue": 0,
-        "weak": 1,
-        "improving": 2,
-        "successful": 3,
-        "normal": 4,
-        "insufficient_data": 5,
-    }
-
-    analyzed.sort(
-        key=lambda x: (
-            priority.get(
-                x["status"],
-                99
-            ),
-            -(
-                x["spend"]
-                or 0
-            ),
-        )
-    )
-
-    return analyzed
-
-
-# ============================================================
-# SUMMARY
-# ============================================================
-
-def calculate_summary(
+  const highestSpend =
     campaigns
-):
-    impressions = sum(
-        c["impressions"]
-        for c in campaigns
-    )
+      .slice()
+      .sort(
+        (a, b) =>
+          b.spend - a.spend
+      )[0];
 
-    clicks = sum(
-        c["clicks"]
-        for c in campaigns
-    )
+  const bestCtr =
+    campaigns
+      .slice()
+      .sort(
+        (a, b) =>
+          b.ctr - a.ctr
+      )[0];
 
-    spend = sum(
-        c["spend"]
-        for c in campaigns
-    )
+  const container =
+    document.getElementById(
+      "budgetPreview"
+    );
 
-    ctr = (
-        clicks
-        / impressions
-        * 100
-        if impressions
-        else 0
-    )
+  container.innerHTML = `
+    <div class="budget-item">
 
-    cpc = (
-        spend / clicks
-        if clicks
-        else 0
-    )
+      <div>
+        <strong>
+          Средний CPC
+        </strong>
 
-    return {
-        "spend": round(
-            spend,
-            2
-        ),
+        <small>
+          По всем кампаниям
+        </small>
+      </div>
 
-        "impressions": impressions,
+      <strong>
+        ${money(
+          DATA.summary.avg_cpc
+        )}
+      </strong>
 
-        "clicks": clicks,
+    </div>
 
-        "ctr": round(
-            ctr,
-            2
-        ),
+    ${
+      highestSpend
+        ? `
+          <div class="budget-item">
 
-        "avg_cpc": round(
-            cpc,
-            2
-        ),
+            <div>
+              <strong>
+                Максимальный расход
+              </strong>
+
+              <small>
+                ${escapeHtml(
+                  highestSpend.name
+                )}
+              </small>
+            </div>
+
+            <strong>
+              ${money(
+                highestSpend.spend
+              )}
+            </strong>
+
+          </div>
+        `
+        : ""
     }
 
+    ${
+      bestCtr
+        ? `
+          <div class="budget-item">
 
-def calculate_creative_summary(
-    creatives
-):
-    counts = defaultdict(int)
+            <div>
+              <strong>
+                Лучший CTR
+              </strong>
 
-    for ad in creatives:
-        counts[
-            ad["status"]
-        ] += 1
+              <small>
+                ${escapeHtml(
+                  bestCtr.name
+                )}
+              </small>
+            </div>
 
-    return {
-        "total": len(creatives),
+            <strong>
+              ${pct(
+                bestCtr.ctr
+              )}
+            </strong>
 
-        "successful": counts[
-            "successful"
-        ],
-
-        "normal": counts[
-            "normal"
-        ],
-
-        "weak": counts[
-            "weak"
-        ],
-
-        "fatigue": counts[
-            "fatigue"
-        ],
-
-        "improving": counts[
-            "improving"
-        ],
-
-        "insufficient_data": counts[
-            "insufficient_data"
-        ],
+          </div>
+        `
+        : ""
     }
+  `;
+}
 
 
-# ============================================================
-# BUILD REPORT
-# ============================================================
+/* =========================================================
+   CREATIVE SUMMARY
+========================================================= */
 
-def build_report():
-    print(
-        "Downloading campaign statistics...",
-        flush=True,
-    )
+function renderCreativeSummary() {
+  const s =
+    DATA.creative_summary;
 
-    campaign_rows = (
-        get_campaign_report()
-    )
+  if (!s) {
+    return;
+  }
 
-    print(
-        "Downloading ad statistics...",
-        flush=True,
-    )
+  const priority =
+    document.getElementById(
+      "priorityAlerts"
+    );
 
-    ad_rows = (
-        get_ad_report()
-    )
+  if (!priority) {
+    return;
+  }
 
-    campaigns = (
-        aggregate_campaigns(
-            campaign_rows
-        )
-    )
+  priority.innerHTML = `
 
-    raw_creatives = (
-        aggregate_ads(
-            ad_rows
-        )
-    )
+    <article
+      class="alert-card opportunity"
+    >
+      <div class="severity">
+        Успешные
+      </div>
 
-    creatives = (
-        analyze_creatives(
-            raw_creatives
-        )
-    )
+      <h4>
+        ${s.successful}
+        эффективных объявлений
+      </h4>
 
-    summary = calculate_summary(
-        campaigns
-    )
+      <p>
+        Score 70+ относительно
+        сопоставимых объявлений.
+      </p>
+    </article>
 
-    creative_summary = (
-        calculate_creative_summary(
-            creatives
-        )
-    )
 
-    print(
-        f"Campaigns: "
-        f"{len(campaigns)}",
-        flush=True,
-    )
+    <article
+      class="alert-card warning"
+    >
+      <div class="severity">
+        Выгорание
+      </div>
 
-    print(
-        f"Creatives: "
-        f"{len(creatives)}",
-        flush=True,
-    )
+      <h4>
+        ${s.fatigue}
+        объявлений выгорают
+      </h4>
 
-    print(
-        "Creative summary:",
-        creative_summary,
-        flush=True,
-    )
+      <p>
+        CTR падает одновременно
+        с ростом CPC.
+      </p>
+    </article>
 
-    return {
-        "meta": {
-            "updated_at": (
-                datetime.now(
-                    timezone.utc
-                ).isoformat()
-            ),
 
-            "source": (
-                "yandex_direct"
-            ),
+    <article
+      class="alert-card critical"
+    >
+      <div class="severity">
+        Слабые
+      </div>
 
-            "period_days": (
-                REPORT_DAYS
-            ),
+      <h4>
+        ${s.weak}
+        слабых объявлений
+      </h4>
 
-            "creative_method": (
-                "traffic_efficiency_v1"
-            ),
-        },
+      <p>
+        Score ниже 45.
+      </p>
+    </article>
 
-        "summary": summary,
+  `;
+}
 
-        "campaigns": campaigns,
 
-        "creative_summary": (
-            creative_summary
-        ),
+/* =========================================================
+   CREATIVES
+========================================================= */
 
-        "creatives": creatives,
+function renderCreatives() {
+  const container =
+    document.getElementById(
+      "creativeGrid"
+    );
 
-        # Дневные данные кампаний
-        # оставляем для будущих сравнений.
-        "daily": campaign_rows,
+  if (!container) {
+    return;
+  }
+
+  const creatives =
+    DATA.creatives || [];
+
+  if (!creatives.length) {
+    container.innerHTML =
+      `<div class="note">
+        Объявления не найдены.
+      </div>`;
+
+    return;
+  }
+
+  container.innerHTML =
+    creatives.map(
+      creativeCard
+    ).join("");
+}
+
+
+function creativeCard(c) {
+  const status =
+    creativeStatus(
+      c.status
+    );
+
+  const score =
+    c.score === null
+      ? "—"
+      : c.score;
+
+  const trend =
+    c.trend || {};
+
+  return `
+    <article class="creative">
+
+      <div class="creative-head">
+
+        <div>
+          <div
+            style="
+              font-size:10px;
+              color:#8ea2bb;
+              margin-bottom:5px;
+            "
+          >
+            AD ${escapeHtml(
+              c.ad_id
+            )}
+          </div>
+
+          <h4>
+            ${escapeHtml(
+              c.campaign_name
+            )}
+          </h4>
+        </div>
+
+        <span
+          class="fatigue"
+          title="Traffic Efficiency Score"
+        >
+          ${score}
+        </span>
+
+      </div>
+
+
+      <div
+        style="
+          margin-top:8px;
+          font-size:11px;
+          color:#8ea2bb;
+        "
+      >
+        ${escapeHtml(
+          c.ad_group_name
+        )}
+      </div>
+
+
+      <div
+        style="
+          display:flex;
+          gap:6px;
+          flex-wrap:wrap;
+          margin-top:12px;
+        "
+      >
+
+        <span
+          style="
+            padding:5px 8px;
+            border-radius:7px;
+            background:#0a1726;
+            font-size:10px;
+          "
+        >
+          ${status.icon}
+          ${status.label}
+        </span>
+
+        <span
+          style="
+            padding:5px 8px;
+            border-radius:7px;
+            background:#0a1726;
+            font-size:10px;
+          "
+        >
+          ${escapeHtml(
+            c.network
+          )}
+        </span>
+
+        <span
+          style="
+            padding:5px 8px;
+            border-radius:7px;
+            background:#0a1726;
+            font-size:10px;
+          "
+        >
+          ${escapeHtml(
+            c.format
+          )}
+        </span>
+
+      </div>
+
+
+      <div class="stats"
+        style="
+          margin-top:15px;
+        "
+      >
+
+        <div class="mini">
+          <span>CTR</span>
+
+          <strong>
+            ${pct(c.ctr)}
+          </strong>
+        </div>
+
+
+        <div class="mini">
+          <span>CPC</span>
+
+          <strong>
+            ${money(
+              c.avg_cpc
+            )}
+          </strong>
+        </div>
+
+
+        <div class="mini">
+          <span>Клики</span>
+
+          <strong>
+            ${number(
+              c.clicks
+            )}
+          </strong>
+        </div>
+
+
+        <div class="mini">
+          <span>Расход</span>
+
+          <strong>
+            ${money(
+              c.spend
+            )}
+          </strong>
+        </div>
+
+      </div>
+
+
+      <div
+        style="
+          margin-top:15px;
+          padding-top:13px;
+          border-top:1px solid #20354e;
+        "
+      >
+
+        <div
+          style="
+            display:flex;
+            justify-content:space-between;
+            font-size:11px;
+          "
+        >
+          <span
+            style="color:#8ea2bb"
+          >
+            CTR 7 дней
+          </span>
+
+          <strong>
+            ${signedPercent(
+              trend.ctr_change
+            )}
+          </strong>
+        </div>
+
+
+        <div
+          style="
+            display:flex;
+            justify-content:space-between;
+            margin-top:7px;
+            font-size:11px;
+          "
+        >
+          <span
+            style="color:#8ea2bb"
+          >
+            CPC 7 дней
+          </span>
+
+          <strong>
+            ${signedPercent(
+              trend.cpc_change
+            )}
+          </strong>
+        </div>
+
+      </div>
+
+
+      <p>
+        ${escapeHtml(
+          c.reason
+        )}
+      </p>
+
+    </article>
+  `;
+}
+
+
+function creativeStatus(status) {
+  const statuses = {
+    successful: {
+      icon: "🟢",
+      label: "Успешный",
+    },
+
+    normal: {
+      icon: "🟡",
+      label: "Нормальный",
+    },
+
+    weak: {
+      icon: "🔴",
+      label: "Слабый",
+    },
+
+    fatigue: {
+      icon: "🔥",
+      label: "Выгорает",
+    },
+
+    improving: {
+      icon: "🚀",
+      label: "Улучшается",
+    },
+
+    insufficient_data: {
+      icon: "⚪",
+      label: "Мало данных",
+    },
+  };
+
+  return (
+    statuses[status]
+    || statuses.normal
+  );
+}
+
+
+function signedPercent(value) {
+  value =
+    Number(value || 0);
+
+  const prefix =
+    value > 0
+      ? "+"
+      : "";
+
+  return (
+    prefix
+    + value.toFixed(1)
+    + "%"
+  );
+}
+
+
+/* =========================================================
+   NAVIGATION
+========================================================= */
+
+document
+  .querySelectorAll(".nav")
+  .forEach(
+    button => {
+
+      button.addEventListener(
+        "click",
+        () => {
+
+          showSection(
+            button.dataset.section
+          );
+
+        }
+      );
+
     }
+  );
 
 
-# ============================================================
-# ENCRYPTION
-# ============================================================
+document
+  .querySelectorAll(
+    "[data-goto]"
+  )
+  .forEach(
+    button => {
 
-def derive_key(
-    password,
-    salt,
-):
-    return hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt,
-        PBKDF2_ITERATIONS,
-        dklen=32,
-    )
+      button.addEventListener(
+        "click",
+        () => {
 
+          showSection(
+            button.dataset.goto
+          );
 
-def encrypt_report(report):
-    plaintext = json.dumps(
-        report,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
+        }
+      );
 
-    salt = secrets.token_bytes(16)
-    nonce = secrets.token_bytes(12)
-
-    key = derive_key(
-        REPORT_PASSWORD,
-        salt,
-    )
-
-    aesgcm = AESGCM(key)
-
-    ciphertext = aesgcm.encrypt(
-        nonce,
-        plaintext,
-        None,
-    )
-
-    return {
-        "version": 1,
-
-        "kdf": (
-            "PBKDF2-SHA256"
-        ),
-
-        "iterations": (
-            PBKDF2_ITERATIONS
-        ),
-
-        "cipher": (
-            "AES-256-GCM"
-        ),
-
-        "salt": base64.b64encode(
-            salt
-        ).decode("ascii"),
-
-        "nonce": base64.b64encode(
-            nonce
-        ).decode("ascii"),
-
-        "ciphertext": (
-            base64.b64encode(
-                ciphertext
-            ).decode("ascii")
-        ),
     }
+  );
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-    report = build_report()
-
-    encrypted = encrypt_report(
-        report
+function showSection(id) {
+  document
+    .querySelectorAll(
+      ".section"
     )
+    .forEach(
+      section =>
+        section.classList.remove(
+          "active"
+        )
+    );
 
-    OUT.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+  document
+    .querySelectorAll(
+      ".nav"
     )
+    .forEach(
+      button =>
+        button.classList.toggle(
+          "active",
+          button.dataset.section
+            === id
+        )
+    );
 
-    OUT.write_text(
-        json.dumps(
-            encrypted,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-        encoding="utf-8",
+  const target =
+    document.getElementById(id);
+
+  if (target) {
+    target.classList.add(
+      "active"
+    );
+  }
+
+  const titles = {
+    overview: [
+      "Обзор рекламы",
+      "Актуальные показатели Яндекс Директа."
+    ],
+
+    alerts: [
+      "Аномалии",
+      "Автоматический контроль отклонений."
+    ],
+
+    budget: [
+      "Budget Optimizer",
+      "Анализ эффективности расходов."
+    ],
+
+    creatives: [
+      "Creative Intelligence",
+      "Какие объявления работают, а какие теряют эффективность."
+    ],
+  };
+
+  if (titles[id]) {
+    document.getElementById(
+      "pageTitle"
+    ).textContent =
+      titles[id][0];
+
+    document.getElementById(
+      "pageSubtitle"
+    ).textContent =
+      titles[id][1];
+  }
+}
+
+
+/* =========================================================
+   UTILITIES
+========================================================= */
+
+function formatDate(value) {
+  if (!value) {
+    return "—";
+  }
+
+  return new Date(
+    value
+  ).toLocaleString(
+    "ru-RU"
+  );
+}
+
+
+function escapeHtml(value) {
+  return String(
+    value ?? ""
+  )
+    .replaceAll(
+      "&",
+      "&amp;"
     )
-
-    print(
-        f"Encrypted report saved: {OUT}",
-        flush=True,
+    .replaceAll(
+      "<",
+      "&lt;"
     )
+    .replaceAll(
+      ">",
+      "&gt;"
+    )
+    .replaceAll(
+      '"',
+      "&quot;"
+    )
+    .replaceAll(
+      "'",
+      "&#039;"
+    );
+}
 
 
-if __name__ == "__main__":
-    main()
+/* =========================================================
+   START
+========================================================= */
+
+start();
