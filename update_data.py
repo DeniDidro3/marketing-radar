@@ -1,1262 +1,2876 @@
-let DATA = null;
+import os
+import json
+import csv
+import io
+import time
+import base64
+import hashlib
+import secrets
 
-const fmt =
-  new Intl.NumberFormat("ru-RU");
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from statistics import median
 
-const money = (v) =>
-  `${fmt.format(
-    Math.round(Number(v || 0))
-  )} ₽`;
+import requests
 
-const number = (v) =>
-  fmt.format(
-    Math.round(Number(v || 0))
-  );
-
-const pct = (v) =>
-  `${Number(v || 0).toFixed(2)}%`;
-
-
-/* =========================================================
-   CRYPTO
-========================================================= */
-
-function base64ToBytes(base64) {
-  const binary = atob(base64);
-
-  const bytes =
-    new Uint8Array(
-      binary.length
-    );
-
-  for (
-    let i = 0;
-    i < binary.length;
-    i++
-  ) {
-    bytes[i] =
-      binary.charCodeAt(i);
-  }
-
-  return bytes;
-}
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-async function deriveKey(
-  password,
-  salt,
-  iterations
-) {
-  const encoder =
-    new TextEncoder();
+# ============================================================
+# CONFIG
+# ============================================================
 
-  const keyMaterial =
-    await crypto.subtle.importKey(
-      "raw",
-      encoder.encode(password),
-      "PBKDF2",
-      false,
-      ["deriveKey"]
-    );
+TOKEN = os.environ["YANDEX_DIRECT_TOKEN"]
+REPORT_PASSWORD = os.environ["REPORT_PASSWORD"]
 
-  return crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt,
-      iterations,
-      hash: "SHA-256",
-    },
+DIRECT_REPORT_URL = (
+    "https://api.direct.yandex.com/json/v501/reports"
+)
 
-    keyMaterial,
+DIRECT_API_BASE = (
+    "https://api.direct.yandex.com/json/v5"
+)
 
-    {
-      name: "AES-GCM",
-      length: 256,
-    },
+ROOT = Path(__file__).resolve().parent
 
-    false,
-
-    ["decrypt"]
-  );
-}
+OUT = ROOT / "data" / "report.enc"
 
 
-async function decryptPayload(
-  payload,
-  password
-) {
-  const salt =
-    base64ToBytes(
-      payload.salt
-    );
+REPORT_DAYS = 60
 
-  const nonce =
-    base64ToBytes(
-      payload.nonce
-    );
+TREND_DAYS = 7
 
-  const ciphertext =
-    base64ToBytes(
-      payload.ciphertext
-    );
+MIN_CLICKS_FOR_SCORE = 15
 
-  const key =
-    await deriveKey(
-      password,
-      salt,
-      payload.iterations
-    );
+MIN_CLICKS_FOR_BASELINE = 5
 
-  const plaintext =
-    await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: nonce,
-      },
-      key,
-      ciphertext
-    );
+PBKDF2_ITERATIONS = 600_000
 
-  return JSON.parse(
-    new TextDecoder().decode(
-      plaintext
+
+# ============================================================
+# COMMON HELPERS
+# ============================================================
+
+def safe_float(value, default=0.0):
+
+    if value is None:
+        return default
+
+    value = str(value).strip()
+
+    if value in (
+        "",
+        "-",
+        "--",
+        "null",
+        "None",
+    ):
+        return default
+
+    value = value.replace(",", ".")
+
+    try:
+        return float(value)
+
+    except (
+        ValueError,
+        TypeError,
+    ):
+        return default
+
+
+def safe_int(value, default=0):
+
+    if value is None:
+        return default
+
+    value = str(value).strip()
+
+    if value in (
+        "",
+        "-",
+        "--",
+        "null",
+        "None",
+    ):
+        return default
+
+    try:
+        return int(
+            float(value)
+        )
+
+    except (
+        ValueError,
+        TypeError,
+    ):
+        return default
+
+
+def clamp(
+    value,
+    minimum,
+    maximum,
+):
+
+    return max(
+        minimum,
+        min(
+            maximum,
+            value,
+        ),
     )
-  );
-}
 
 
-async function loadEncryptedReport(
-  password
-) {
-  const response =
-    await fetch(
-      `data/report.enc?t=${Date.now()}`
-    );
+def percent_change(
+    current,
+    previous,
+):
 
-  if (!response.ok) {
-    throw new Error(
-      `HTTP ${response.status}`
-    );
-  }
+    if previous <= 0:
+        return 0.0
 
-  const payload =
-    await response.json();
+    return (
+        (
+            current
+            - previous
+        )
+        / previous
+        * 100
+    )
 
-  return decryptPayload(
+
+def chunks(items, size):
+
+    items = list(items)
+
+    for i in range(
+        0,
+        len(items),
+        size,
+    ):
+        yield items[
+            i:i + size
+        ]
+
+
+# ============================================================
+# GENERIC DIRECT JSON API
+# ============================================================
+
+def direct_api(
+    service,
     payload,
-    password
-  );
-}
+):
 
+    url = (
+        f"{DIRECT_API_BASE}/{service}"
+    )
 
-/* =========================================================
-   LOGIN
-========================================================= */
-
-function showLogin() {
-  document.body.insertAdjacentHTML(
-    "beforeend",
-    `
-    <div
-      id="loginOverlay"
-      style="
-        position:fixed;
-        inset:0;
-        z-index:99999;
-        background:#07111f;
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        padding:24px;
-      "
-    >
-      <div style="
-        width:100%;
-        max-width:400px;
-        padding:32px;
-        border:1px solid #20354e;
-        border-radius:18px;
-        background:#0e1c2e;
-      ">
-
-        <div style="
-          font-size:11px;
-          letter-spacing:.12em;
-          color:#5aa7ff;
-          margin-bottom:10px;
-        ">
-          MARKETING RADAR
-        </div>
-
-        <h2 style="
-          margin:0 0 8px;
-        ">
-          Доступ к аналитике
-        </h2>
-
-        <p style="
-          color:#8ea2bb;
-          font-size:13px;
-          line-height:1.5;
-        ">
-          Введите пароль для
-          расшифровки рекламных данных.
-        </p>
-
-        <input
-          id="reportPassword"
-          type="password"
-          placeholder="Пароль"
-          style="
-            width:100%;
-            padding:13px;
-            border-radius:9px;
-            border:1px solid #20354e;
-            background:#091525;
-            color:white;
-            margin-top:12px;
-          "
-        >
-
-        <div
-          id="loginError"
-          style="
-            color:#ff6b72;
-            font-size:11px;
-            min-height:18px;
-            margin-top:8px;
-          "
-        ></div>
-
-        <button
-          id="loginButton"
-          style="
-            width:100%;
-            padding:13px;
-            margin-top:8px;
-            border:0;
-            border-radius:9px;
-            background:#3e9df8;
-            color:white;
-            font-weight:600;
-            cursor:pointer;
-          "
-        >
-          Войти
-        </button>
-
-      </div>
-    </div>
-    `
-  );
-
-  const input =
-    document.getElementById(
-      "reportPassword"
-    );
-
-  const button =
-    document.getElementById(
-      "loginButton"
-    );
-
-  async function login() {
-    const password =
-      input.value;
-
-    if (!password) {
-      return;
+    headers = {
+        "Authorization": (
+            f"Bearer {TOKEN}"
+        ),
+        "Accept-Language": "ru",
+        "Content-Type": (
+            "application/json; "
+            "charset=utf-8"
+        ),
     }
 
-    button.disabled = true;
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=120,
+    )
 
-    button.textContent =
-      "Расшифровка...";
+    if response.status_code != 200:
 
-    try {
-      DATA =
-        await loadEncryptedReport(
-          password
-        );
-
-      sessionStorage.setItem(
-        "marketingRadarPassword",
-        password
-      );
-
-      document
-        .getElementById(
-          "loginOverlay"
+        print(
+            f"{service} API error:",
+            response.status_code,
+            flush=True,
         )
-        .remove();
 
-      render();
-
-    } catch (error) {
-
-      console.error(error);
-
-      document
-        .getElementById(
-          "loginError"
+        print(
+            response.text,
+            flush=True,
         )
-        .textContent =
-          "Неверный пароль.";
 
-      button.disabled = false;
+        raise RuntimeError(
+            f"{service} returned "
+            f"HTTP "
+            f"{response.status_code}"
+        )
 
-      button.textContent =
-        "Войти";
+    data = response.json()
+
+    if "error" in data:
+
+        print(
+            json.dumps(
+                data,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            flush=True,
+        )
+
+        raise RuntimeError(
+            f"Direct service "
+            f"{service} returned error"
+        )
+
+    return data.get(
+        "result",
+        {},
+    )
+
+
+# ============================================================
+# REPORTS API
+# ============================================================
+
+def request_report(
+    report_name,
+    report_type,
+    fields,
+):
+
+    today = (
+        datetime.now(
+            timezone.utc
+        ).date()
+    )
+
+    date_from = (
+        today
+        - timedelta(
+            days=REPORT_DAYS
+        )
+    )
+
+    date_to = (
+        today
+        - timedelta(days=1)
+    )
+
+    headers = {
+        "Authorization": (
+            f"Bearer {TOKEN}"
+        ),
+        "Accept-Language": "ru",
+        "processingMode": "auto",
+        "returnMoneyInMicros": (
+            "false"
+        ),
+        "skipReportHeader": (
+            "true"
+        ),
+        "skipColumnHeader": (
+            "true"
+        ),
+        "skipReportSummary": (
+            "true"
+        ),
     }
-  }
 
-  button.addEventListener(
-    "click",
-    login
-  );
+    body = {
+        "params": {
 
-  input.addEventListener(
-    "keydown",
-    event => {
-      if (
-        event.key === "Enter"
-      ) {
-        login();
-      }
+            "SelectionCriteria": {
+                "DateFrom": (
+                    date_from.isoformat()
+                ),
+                "DateTo": (
+                    date_to.isoformat()
+                ),
+            },
+
+            "FieldNames": fields,
+
+            "OrderBy": [
+                {
+                    "Field": "Date",
+                    "SortOrder": (
+                        "ASCENDING"
+                    ),
+                }
+            ],
+
+            "ReportName": (
+                report_name
+            ),
+
+            "ReportType": (
+                report_type
+            ),
+
+            "DateRangeType": (
+                "CUSTOM_DATE"
+            ),
+
+            "Format": "TSV",
+
+            "IncludeVAT": "YES",
+
+            "IncludeDiscount": "YES",
+        }
     }
-  );
 
-  input.focus();
-}
+    max_attempts = 20
 
+    for attempt in range(
+        1,
+        max_attempts + 1,
+    ):
 
-async function start() {
-  const password =
-    sessionStorage.getItem(
-      "marketingRadarPassword"
-    );
+        print(
+            f"[{attempt}/{max_attempts}] "
+            f"{report_name}",
+            flush=True,
+        )
 
-  if (password) {
-    try {
-      DATA =
-        await loadEncryptedReport(
-          password
-        );
+        response = requests.post(
+            DIRECT_REPORT_URL,
+            headers=headers,
+            json=body,
+            timeout=120,
+        )
 
-      render();
+        print(
+            "HTTP",
+            response.status_code,
+            flush=True,
+        )
 
-      return;
+        if (
+            response.status_code
+            == 200
+        ):
 
-    } catch {
-      sessionStorage.removeItem(
-        "marketingRadarPassword"
-      );
-    }
-  }
+            print(
+                f"{report_name} received",
+                flush=True,
+            )
 
-  showLogin();
-}
+            return response.text
 
+        if response.status_code in (
+            201,
+            202,
+        ):
 
-/* =========================================================
-   MAIN RENDER
-========================================================= */
+            retry_in = safe_int(
+                response.headers.get(
+                    "retryIn",
+                    10,
+                ),
+                10,
+            )
 
-function render() {
-  renderMeta();
-  renderHero();
-  renderKPIs();
-  renderCampaignTable();
-  renderDirectSummary();
-  renderCreativeSummary();
-  renderCreatives();
-}
+            print(
+                f"Waiting "
+                f"{retry_in}s...",
+                flush=True,
+            )
 
+            time.sleep(
+                retry_in
+            )
 
-/* =========================================================
-   META
-========================================================= */
+            continue
 
-function renderMeta() {
-  const updated =
-    formatDate(
-      DATA.meta?.updated_at
-    );
+        print(
+            response.text,
+            flush=True,
+        )
 
-  const sidebar =
-    document.getElementById(
-      "sidebarUpdated"
-    );
+        raise RuntimeError(
+            f"Reports API: "
+            f"HTTP "
+            f"{response.status_code}"
+        )
 
-  const footer =
-    document.getElementById(
-      "footerUpdated"
-    );
-
-  if (sidebar) {
-    sidebar.textContent =
-      updated;
-  }
-
-  if (footer) {
-    footer.textContent =
-      `Обновлено ${updated}`;
-  }
-
-  const badge =
-    document.getElementById(
-      "navAlertCount"
-    );
-
-  if (badge) {
-    badge.textContent = "—";
-  }
-}
+    raise RuntimeError(
+        "Report generation timeout"
+    )
 
 
-/* =========================================================
-   HERO
-========================================================= */
+# ============================================================
+# CAMPAIGN REPORT
+# ============================================================
 
-function renderHero() {
-  const s =
-    DATA.summary || {};
+def get_campaign_rows():
 
-  document.getElementById(
-    "heroHeadline"
-  ).textContent =
-    "Данные Яндекс Директа обновлены";
+    fields = [
+        "Date",
+        "CampaignId",
+        "CampaignName",
+        "Impressions",
+        "Clicks",
+        "Cost",
+    ]
 
-  document.getElementById(
-    "heroCopy"
-  ).textContent =
-    `${DATA.campaigns?.length || 0} кампаний, ` +
-    `${number(s.clicks)} кликов, ` +
-    `${money(s.spend)} расходов`;
+    text = request_report(
+        (
+            "Marketing Radar "
+            "Campaign Report"
+        ),
+        (
+            "CAMPAIGN_PERFORMANCE_REPORT"
+        ),
+        fields,
+    )
 
-  document.getElementById(
-    "healthScore"
-  ).textContent =
-    "LIVE";
-}
+    reader = csv.reader(
+        io.StringIO(text),
+        delimiter="\t",
+    )
 
+    rows = []
 
-/* =========================================================
-   KPI
-========================================================= */
+    for values in reader:
 
-function renderKPIs() {
-  const s =
-    DATA.summary || {};
+        if (
+            not values
+            or len(values)
+            < len(fields)
+        ):
+            continue
 
-  const items = [
-    [
-      "Расход",
-      money(s.spend)
-    ],
+        row = dict(
+            zip(
+                fields,
+                values,
+            )
+        )
 
-    [
-      "Показы",
-      number(
-        s.impressions
-      )
-    ],
+        rows.append({
 
-    [
-      "Клики",
-      number(
-        s.clicks
-      )
-    ],
+            "date":
+                row["Date"],
 
-    [
-      "CTR",
-      pct(s.ctr)
-    ],
-  ];
+            "campaign_id":
+                row["CampaignId"],
 
-  document.getElementById(
-    "kpis"
-  ).innerHTML =
-    items.map(
-      ([label, value]) => `
-        <div class="kpi">
+            "campaign_name":
+                row["CampaignName"],
 
-          <div class="label">
-            ${label}
-          </div>
+            "impressions":
+                safe_int(
+                    row["Impressions"]
+                ),
 
-          <div class="value">
-            ${value}
-          </div>
+            "clicks":
+                safe_int(
+                    row["Clicks"]
+                ),
 
-          <div class="delta neutral">
-            за выбранный период
-          </div>
+            "cost":
+                safe_float(
+                    row["Cost"]
+                ),
+        })
 
-        </div>
-      `
-    ).join("");
-}
+    return rows
 
 
-/* =========================================================
-   CAMPAIGNS
-========================================================= */
+# ============================================================
+# AD PERFORMANCE REPORT
+# ============================================================
 
-function renderCampaignTable() {
-  const campaigns =
-    [...(
-      DATA.campaigns || []
-    )];
+def get_ad_rows():
 
-  campaigns.sort(
-    (a, b) =>
-      b.spend - a.spend
-  );
+    fields = [
+        "Date",
+        "CampaignId",
+        "CampaignName",
+        "AdGroupId",
+        "AdGroupName",
+        "AdId",
+        "AdNetworkType",
+        "AdFormat",
+        "Impressions",
+        "Clicks",
+        "Cost",
+    ]
 
-  document.getElementById(
-    "campaignTable"
-  ).innerHTML = `
-    <table class="table">
+    text = request_report(
+        (
+            "Marketing Radar "
+            "Asset Performance"
+        ),
+        "AD_PERFORMANCE_REPORT",
+        fields,
+    )
 
-      <thead>
-        <tr>
-          <th>Кампания</th>
-          <th>Расход</th>
-          <th>Показы</th>
-          <th>Клики</th>
-          <th>CTR</th>
-          <th>CPC</th>
-        </tr>
-      </thead>
+    reader = csv.reader(
+        io.StringIO(text),
+        delimiter="\t",
+    )
 
-      <tbody>
+    rows = []
 
-        ${
-          campaigns.map(
-            c => `
-              <tr>
+    for values in reader:
 
-                <td>
-                  ${escapeHtml(
-                    c.name
-                  )}
-                </td>
+        if (
+            not values
+            or len(values)
+            < len(fields)
+        ):
+            continue
 
-                <td>
-                  ${money(
-                    c.spend
-                  )}
-                </td>
+        row = dict(
+            zip(
+                fields,
+                values,
+            )
+        )
 
-                <td>
-                  ${number(
-                    c.impressions
-                  )}
-                </td>
+        ad_id = (
+            row.get(
+                "AdId",
+                "",
+            )
+        )
 
-                <td>
-                  ${number(
-                    c.clicks
-                  )}
-                </td>
+        if ad_id in (
+            "",
+            "-",
+            "--",
+        ):
+            continue
 
-                <td>
-                  ${pct(
-                    c.ctr
-                  )}
-                </td>
+        rows.append({
 
-                <td>
-                  ${money(
-                    c.avg_cpc
-                  )}
-                </td>
+            "date":
+                row["Date"],
 
-              </tr>
-            `
-          ).join("")
+            "campaign_id":
+                row["CampaignId"],
+
+            "campaign_name":
+                row["CampaignName"],
+
+            "ad_group_id":
+                row["AdGroupId"],
+
+            "ad_group_name":
+                row["AdGroupName"],
+
+            "ad_id":
+                ad_id,
+
+            "network":
+                row[
+                    "AdNetworkType"
+                ],
+
+            "ad_format":
+                row["AdFormat"],
+
+            "impressions":
+                safe_int(
+                    row["Impressions"]
+                ),
+
+            "clicks":
+                safe_int(
+                    row["Clicks"]
+                ),
+
+            "cost":
+                safe_float(
+                    row["Cost"]
+                ),
+        })
+
+    print(
+        "Ad statistic rows:",
+        len(rows),
+        flush=True,
+    )
+
+    return rows
+
+
+# ============================================================
+# ADS.GET
+# ============================================================
+
+def get_ads(
+    ad_ids,
+):
+
+    result = {}
+
+    numeric_ids = []
+
+    for ad_id in ad_ids:
+
+        try:
+            numeric_ids.append(
+                int(ad_id)
+            )
+        except Exception:
+            pass
+
+    for id_chunk in chunks(
+        numeric_ids,
+        5000,
+    ):
+
+        payload = {
+
+            "method": "get",
+
+            "params": {
+
+                "SelectionCriteria": {
+                    "Ids": id_chunk,
+                },
+
+                "FieldNames": [
+                    "Id",
+                    "CampaignId",
+                    "AdGroupId",
+                    "Type",
+                    "Subtype",
+                    "State",
+                    "Status",
+                ],
+
+                # Обычные Text & Image
+                "TextAdFieldNames": [
+                    "AdImageHash",
+                    "VideoExtension",
+                ],
+
+                # Динамические
+                "DynamicTextAdFieldNames": [
+                    "AdImageHash",
+                ],
+
+                # Mobile App
+                "MobileAppAdFieldNames": [
+                    "AdImageHash",
+                    "VideoExtension",
+                ],
+
+                # Image Ad из картинки
+                "TextImageAdFieldNames": [
+                    "AdImageHash",
+                ],
+
+                "MobileAppImageAdFieldNames": [
+                    "AdImageHash",
+                ],
+
+                # Builder image creative
+                "TextAdBuilderAdFieldNames": [
+                    "Creative",
+                ],
+
+                "MobileAppAdBuilderAdFieldNames": [
+                    "Creative",
+                ],
+
+                # Video builders
+                "MobileAppCpcVideoAdBuilderAdFieldNames": [
+                    "Creative",
+                ],
+
+                "CpcVideoAdBuilderAdFieldNames": [
+                    "Creative",
+                ],
+
+                # CPM
+                "CpmBannerAdBuilderAdFieldNames": [
+                    "Creative",
+                ],
+
+                "CpmVideoAdBuilderAdFieldNames": [
+                    "Creative",
+                ],
+
+                # Smart
+                "SmartAdBuilderAdFieldNames": [
+                    "Creative",
+                ],
+
+                # Комбинаторные объявления
+                "ResponsiveAdFieldNames": [
+                    "AdImages",
+                    "VideoExtensions",
+                ],
+
+                "Page": {
+                    "Limit": 5000,
+                    "Offset": 0,
+                },
+            }
         }
 
-      </tbody>
-
-    </table>
-  `;
-}
-
-
-/* =========================================================
-   DIRECT SUMMARY
-========================================================= */
-
-function renderDirectSummary() {
-  const campaigns =
-    [...(
-      DATA.campaigns || []
-    )];
-
-  const highestSpend =
-    campaigns
-      .slice()
-      .sort(
-        (a, b) =>
-          b.spend - a.spend
-      )[0];
-
-  const bestCtr =
-    campaigns
-      .slice()
-      .sort(
-        (a, b) =>
-          b.ctr - a.ctr
-      )[0];
-
-  const container =
-    document.getElementById(
-      "budgetPreview"
-    );
-
-  container.innerHTML = `
-    <div class="budget-item">
-
-      <div>
-        <strong>
-          Средний CPC
-        </strong>
-
-        <small>
-          По всем кампаниям
-        </small>
-      </div>
-
-      <strong>
-        ${money(
-          DATA.summary.avg_cpc
-        )}
-      </strong>
-
-    </div>
-
-    ${
-      highestSpend
-        ? `
-          <div class="budget-item">
-
-            <div>
-              <strong>
-                Максимальный расход
-              </strong>
-
-              <small>
-                ${escapeHtml(
-                  highestSpend.name
-                )}
-              </small>
-            </div>
-
-            <strong>
-              ${money(
-                highestSpend.spend
-              )}
-            </strong>
-
-          </div>
-        `
-        : ""
-    }
-
-    ${
-      bestCtr
-        ? `
-          <div class="budget-item">
-
-            <div>
-              <strong>
-                Лучший CTR
-              </strong>
-
-              <small>
-                ${escapeHtml(
-                  bestCtr.name
-                )}
-              </small>
-            </div>
-
-            <strong>
-              ${pct(
-                bestCtr.ctr
-              )}
-            </strong>
-
-          </div>
-        `
-        : ""
-    }
-  `;
-}
-
-
-/* =========================================================
-   CREATIVE SUMMARY
-========================================================= */
-
-function renderCreativeSummary() {
-  const s =
-    DATA.creative_summary;
-
-  if (!s) {
-    return;
-  }
-
-  const priority =
-    document.getElementById(
-      "priorityAlerts"
-    );
-
-  if (!priority) {
-    return;
-  }
-
-  priority.innerHTML = `
-
-    <article
-      class="alert-card opportunity"
-    >
-      <div class="severity">
-        Успешные
-      </div>
-
-      <h4>
-        ${s.successful}
-        эффективных объявлений
-      </h4>
-
-      <p>
-        Score 70+ относительно
-        сопоставимых объявлений.
-      </p>
-    </article>
-
-
-    <article
-      class="alert-card warning"
-    >
-      <div class="severity">
-        Выгорание
-      </div>
-
-      <h4>
-        ${s.fatigue}
-        объявлений выгорают
-      </h4>
-
-      <p>
-        CTR падает одновременно
-        с ростом CPC.
-      </p>
-    </article>
-
-
-    <article
-      class="alert-card critical"
-    >
-      <div class="severity">
-        Слабые
-      </div>
-
-      <h4>
-        ${s.weak}
-        слабых объявлений
-      </h4>
-
-      <p>
-        Score ниже 45.
-      </p>
-    </article>
-
-  `;
-}
-
-
-/* =========================================================
-   CREATIVES
-========================================================= */
-
-function renderCreatives() {
-  const container =
-    document.getElementById(
-      "creativeGrid"
-    );
-
-  if (!container) {
-    return;
-  }
-
-  const creatives =
-    DATA.creatives || [];
-
-  if (!creatives.length) {
-    container.innerHTML =
-      `<div class="note">
-        Объявления не найдены.
-      </div>`;
-
-    return;
-  }
-
-  container.innerHTML =
-    creatives.map(
-      creativeCard
-    ).join("");
-}
-
-
-function creativeCard(c) {
-  const status =
-    creativeStatus(
-      c.status
-    );
-
-  const score =
-    c.score === null
-      ? "—"
-      : c.score;
-
-  const trend =
-    c.trend || {};
-
-  return `
-    <article class="creative">
-
-      <div class="creative-head">
-
-        <div>
-          <div
-            style="
-              font-size:10px;
-              color:#8ea2bb;
-              margin-bottom:5px;
-            "
-          >
-            AD ${escapeHtml(
-              c.ad_id
-            )}
-          </div>
-
-          <h4>
-            ${escapeHtml(
-              c.campaign_name
-            )}
-          </h4>
-        </div>
-
-        <span
-          class="fatigue"
-          title="Traffic Efficiency Score"
-        >
-          ${score}
-        </span>
-
-      </div>
-
-
-      <div
-        style="
-          margin-top:8px;
-          font-size:11px;
-          color:#8ea2bb;
-        "
-      >
-        ${escapeHtml(
-          c.ad_group_name
-        )}
-      </div>
-
-
-      <div
-        style="
-          display:flex;
-          gap:6px;
-          flex-wrap:wrap;
-          margin-top:12px;
-        "
-      >
-
-        <span
-          style="
-            padding:5px 8px;
-            border-radius:7px;
-            background:#0a1726;
-            font-size:10px;
-          "
-        >
-          ${status.icon}
-          ${status.label}
-        </span>
-
-        <span
-          style="
-            padding:5px 8px;
-            border-radius:7px;
-            background:#0a1726;
-            font-size:10px;
-          "
-        >
-          ${escapeHtml(
-            c.network
-          )}
-        </span>
-
-        <span
-          style="
-            padding:5px 8px;
-            border-radius:7px;
-            background:#0a1726;
-            font-size:10px;
-          "
-        >
-          ${escapeHtml(
-            c.format
-          )}
-        </span>
-
-      </div>
-
-
-      <div class="stats"
-        style="
-          margin-top:15px;
-        "
-      >
-
-        <div class="mini">
-          <span>CTR</span>
-
-          <strong>
-            ${pct(c.ctr)}
-          </strong>
-        </div>
-
-
-        <div class="mini">
-          <span>CPC</span>
-
-          <strong>
-            ${money(
-              c.avg_cpc
-            )}
-          </strong>
-        </div>
-
-
-        <div class="mini">
-          <span>Клики</span>
-
-          <strong>
-            ${number(
-              c.clicks
-            )}
-          </strong>
-        </div>
-
-
-        <div class="mini">
-          <span>Расход</span>
-
-          <strong>
-            ${money(
-              c.spend
-            )}
-          </strong>
-        </div>
-
-      </div>
-
-
-      <div
-        style="
-          margin-top:15px;
-          padding-top:13px;
-          border-top:1px solid #20354e;
-        "
-      >
-
-        <div
-          style="
-            display:flex;
-            justify-content:space-between;
-            font-size:11px;
-          "
-        >
-          <span
-            style="color:#8ea2bb"
-          >
-            CTR 7 дней
-          </span>
-
-          <strong>
-            ${signedPercent(
-              trend.ctr_change
-            )}
-          </strong>
-        </div>
-
-
-        <div
-          style="
-            display:flex;
-            justify-content:space-between;
-            margin-top:7px;
-            font-size:11px;
-          "
-        >
-          <span
-            style="color:#8ea2bb"
-          >
-            CPC 7 дней
-          </span>
-
-          <strong>
-            ${signedPercent(
-              trend.cpc_change
-            )}
-          </strong>
-        </div>
-
-      </div>
-
-
-      <p>
-        ${escapeHtml(
-          c.reason
-        )}
-      </p>
-
-    </article>
-  `;
-}
-
-
-function creativeStatus(status) {
-  const statuses = {
-    successful: {
-      icon: "🟢",
-      label: "Успешный",
-    },
-
-    normal: {
-      icon: "🟡",
-      label: "Нормальный",
-    },
-
-    weak: {
-      icon: "🔴",
-      label: "Слабый",
-    },
-
-    fatigue: {
-      icon: "🔥",
-      label: "Выгорает",
-    },
-
-    improving: {
-      icon: "🚀",
-      label: "Улучшается",
-    },
-
-    insufficient_data: {
-      icon: "⚪",
-      label: "Мало данных",
-    },
-  };
-
-  return (
-    statuses[status]
-    || statuses.normal
-  );
-}
-
-
-function signedPercent(value) {
-  value =
-    Number(value || 0);
-
-  const prefix =
-    value > 0
-      ? "+"
-      : "";
-
-  return (
-    prefix
-    + value.toFixed(1)
-    + "%"
-  );
-}
-
-
-/* =========================================================
-   NAVIGATION
-========================================================= */
-
-document
-  .querySelectorAll(".nav")
-  .forEach(
-    button => {
-
-      button.addEventListener(
-        "click",
-        () => {
-
-          showSection(
-            button.dataset.section
-          );
-
-        }
-      );
-
-    }
-  );
-
-
-document
-  .querySelectorAll(
-    "[data-goto]"
-  )
-  .forEach(
-    button => {
-
-      button.addEventListener(
-        "click",
-        () => {
-
-          showSection(
-            button.dataset.goto
-          );
-
-        }
-      );
-
-    }
-  );
-
-
-function showSection(id) {
-  document
-    .querySelectorAll(
-      ".section"
-    )
-    .forEach(
-      section =>
-        section.classList.remove(
-          "active"
+        api_result = direct_api(
+            "ads",
+            payload,
         )
-    );
 
-  document
-    .querySelectorAll(
-      ".nav"
+        for ad in api_result.get(
+            "Ads",
+            [],
+        ):
+            result[
+                str(ad["Id"])
+            ] = ad
+
+    print(
+        "Ads.get objects:",
+        len(result),
+        flush=True,
     )
-    .forEach(
-      button =>
-        button.classList.toggle(
-          "active",
-          button.dataset.section
-            === id
+
+    return result
+
+
+# ============================================================
+# EXTRACT VISUAL ASSETS FROM AD
+# ============================================================
+
+def make_image_asset(
+    image_hash,
+    source,
+):
+
+    if not image_hash:
+        return None
+
+    return {
+        "asset_key": (
+            f"image:{image_hash}"
+        ),
+        "asset_id": image_hash,
+        "kind": "image",
+        "source": source,
+    }
+
+
+def make_creative_asset(
+    creative,
+    kind,
+    source,
+):
+
+    if not creative:
+        return None
+
+    creative_id = (
+        creative.get(
+            "CreativeId"
         )
-    );
-
-  const target =
-    document.getElementById(id);
-
-  if (target) {
-    target.classList.add(
-      "active"
-    );
-  }
-
-  const titles = {
-    overview: [
-      "Обзор рекламы",
-      "Актуальные показатели Яндекс Директа."
-    ],
-
-    alerts: [
-      "Аномалии",
-      "Автоматический контроль отклонений."
-    ],
-
-    budget: [
-      "Budget Optimizer",
-      "Анализ эффективности расходов."
-    ],
-
-    creatives: [
-      "Creative Intelligence",
-      "Какие объявления работают, а какие теряют эффективность."
-    ],
-  };
-
-  if (titles[id]) {
-    document.getElementById(
-      "pageTitle"
-    ).textContent =
-      titles[id][0];
-
-    document.getElementById(
-      "pageSubtitle"
-    ).textContent =
-      titles[id][1];
-  }
-}
-
-
-/* =========================================================
-   UTILITIES
-========================================================= */
-
-function formatDate(value) {
-  if (!value) {
-    return "—";
-  }
-
-  return new Date(
-    value
-  ).toLocaleString(
-    "ru-RU"
-  );
-}
-
-
-function escapeHtml(value) {
-  return String(
-    value ?? ""
-  )
-    .replaceAll(
-      "&",
-      "&amp;"
     )
-    .replaceAll(
-      "<",
-      "&lt;"
-    )
-    .replaceAll(
-      ">",
-      "&gt;"
-    )
-    .replaceAll(
-      '"',
-      "&quot;"
-    )
-    .replaceAll(
-      "'",
-      "&#039;"
-    );
-}
+
+    if not creative_id:
+        return None
+
+    return {
+
+        "asset_key": (
+            f"creative:"
+            f"{creative_id}"
+        ),
+
+        "asset_id": (
+            str(creative_id)
+        ),
+
+        "kind": kind,
+
+        "source": source,
+
+        "preview_url": (
+            creative.get(
+                "PreviewUrl"
+            )
+        ),
+
+        "thumbnail_url": (
+            creative.get(
+                "ThumbnailUrl"
+            )
+        ),
+    }
 
 
-/* =========================================================
-   START
-========================================================= */
+def extract_ad_assets(ad):
 
-start();
+    assets = []
+
+    # ----------------------------------------
+    # TEXT_AD
+    # ----------------------------------------
+
+    text_ad = ad.get(
+        "TextAd"
+    )
+
+    if text_ad:
+
+        image_hash = (
+            text_ad.get(
+                "AdImageHash"
+            )
+        )
+
+        asset = make_image_asset(
+            image_hash,
+            "TextAd.AdImageHash",
+        )
+
+        if asset:
+            assets.append(asset)
+
+        video = (
+            text_ad.get(
+                "VideoExtension"
+            )
+        )
+
+        asset = (
+            make_creative_asset(
+                video,
+                "video",
+                (
+                    "TextAd."
+                    "VideoExtension"
+                ),
+            )
+        )
+
+        if asset:
+            assets.append(asset)
+
+    # ----------------------------------------
+    # DYNAMIC TEXT AD
+    # ----------------------------------------
+
+    dynamic = ad.get(
+        "DynamicTextAd"
+    )
+
+    if dynamic:
+
+        asset = make_image_asset(
+            dynamic.get(
+                "AdImageHash"
+            ),
+            (
+                "DynamicTextAd."
+                "AdImageHash"
+            ),
+        )
+
+        if asset:
+            assets.append(asset)
+
+    # ----------------------------------------
+    # MOBILE APP AD
+    # ----------------------------------------
+
+    mobile = ad.get(
+        "MobileAppAd"
+    )
+
+    if mobile:
+
+        asset = make_image_asset(
+            mobile.get(
+                "AdImageHash"
+            ),
+            (
+                "MobileAppAd."
+                "AdImageHash"
+            ),
+        )
+
+        if asset:
+            assets.append(asset)
+
+        asset = (
+            make_creative_asset(
+                mobile.get(
+                    "VideoExtension"
+                ),
+                "video",
+                (
+                    "MobileAppAd."
+                    "VideoExtension"
+                ),
+            )
+        )
+
+        if asset:
+            assets.append(asset)
+
+    # ----------------------------------------
+    # IMAGE ADS FROM FILE
+    # ----------------------------------------
+
+    for block_name in [
+        "TextImageAd",
+        "MobileAppImageAd",
+    ]:
+
+        block = ad.get(
+            block_name
+        )
+
+        if not block:
+            continue
+
+        asset = make_image_asset(
+            block.get(
+                "AdImageHash"
+            ),
+            (
+                f"{block_name}."
+                f"AdImageHash"
+            ),
+        )
+
+        if asset:
+            assets.append(asset)
+
+    # ----------------------------------------
+    # BUILDER IMAGE CREATIVE
+    # ----------------------------------------
+
+    for block_name in [
+        "TextAdBuilderAd",
+        "MobileAppAdBuilderAd",
+        "CpmBannerAdBuilderAd",
+    ]:
+
+        block = ad.get(
+            block_name
+        )
+
+        if not block:
+            continue
+
+        asset = make_creative_asset(
+            block.get(
+                "Creative"
+            ),
+            "image",
+            (
+                f"{block_name}."
+                f"Creative"
+            ),
+        )
+
+        if asset:
+            assets.append(asset)
+
+    # ----------------------------------------
+    # VIDEO CREATIVES
+    # ----------------------------------------
+
+    for block_name in [
+        "MobileAppCpcVideoAdBuilderAd",
+        "CpcVideoAdBuilderAd",
+        "CpmVideoAdBuilderAd",
+    ]:
+
+        block = ad.get(
+            block_name
+        )
+
+        if not block:
+            continue
+
+        asset = make_creative_asset(
+            block.get(
+                "Creative"
+            ),
+            "video",
+            (
+                f"{block_name}."
+                f"Creative"
+            ),
+        )
+
+        if asset:
+            assets.append(asset)
+
+    # ----------------------------------------
+    # SMART
+    # ----------------------------------------
+
+    smart = ad.get(
+        "SmartAdBuilderAd"
+    )
+
+    if smart:
+
+        asset = make_creative_asset(
+            smart.get(
+                "Creative"
+            ),
+            "smart",
+            (
+                "SmartAdBuilderAd."
+                "Creative"
+            ),
+        )
+
+        if asset:
+            assets.append(asset)
+
+    # ----------------------------------------
+    # RESPONSIVE AD
+    #
+    # Здесь может быть несколько изображений
+    # и несколько видео.
+    # ----------------------------------------
+
+    responsive = ad.get(
+        "ResponsiveAd"
+    )
+
+    if responsive:
+
+        images_block = (
+            responsive.get(
+                "AdImages"
+            )
+            or {}
+        )
+
+        for image in (
+            images_block.get(
+                "Items"
+            )
+            or []
+        ):
+
+            asset = make_image_asset(
+                image.get(
+                    "ImageHash"
+                ),
+                (
+                    "ResponsiveAd."
+                    "AdImages"
+                ),
+            )
+
+            if asset:
+                assets.append(asset)
+
+        videos_block = (
+            responsive.get(
+                "VideoExtensions"
+            )
+            or {}
+        )
+
+        for video in (
+            videos_block.get(
+                "Items"
+            )
+            or []
+        ):
+
+            asset = (
+                make_creative_asset(
+                    video,
+                    "video",
+                    (
+                        "ResponsiveAd."
+                        "VideoExtensions"
+                    ),
+                )
+            )
+
+            if asset:
+                assets.append(asset)
+
+    # ----------------------------------------
+    # DEDUP
+    # ----------------------------------------
+
+    unique = {}
+
+    for asset in assets:
+
+        unique[
+            asset["asset_key"]
+        ] = asset
+
+    return list(
+        unique.values()
+    )
+
+
+# ============================================================
+# AD IMAGES METADATA
+# ============================================================
+
+def get_adimage_metadata(
+    image_hashes,
+):
+
+    metadata = {}
+
+    for hash_chunk in chunks(
+        image_hashes,
+        5000,
+    ):
+
+        if not hash_chunk:
+            continue
+
+        payload = {
+
+            "method": "get",
+
+            "params": {
+
+                "SelectionCriteria": {
+                    "AdImageHashes":
+                        hash_chunk,
+                },
+
+                "FieldNames": [
+                    "AdImageHash",
+                    "OriginalUrl",
+                    "PreviewUrl",
+                    "Name",
+                    "Type",
+                    "Subtype",
+                    "Associated",
+                ],
+
+                "Page": {
+                    "Limit": 5000,
+                    "Offset": 0,
+                },
+            }
+        }
+
+        result = direct_api(
+            "adimages",
+            payload,
+        )
+
+        for item in result.get(
+            "AdImages",
+            [],
+        ):
+
+            metadata[
+                item["AdImageHash"]
+            ] = item
+
+    return metadata
+
+
+# ============================================================
+# CREATIVE METADATA
+# ============================================================
+
+def get_creative_metadata(
+    creative_ids,
+):
+
+    metadata = {}
+
+    numeric = []
+
+    for creative_id in (
+        creative_ids
+    ):
+
+        try:
+            numeric.append(
+                int(creative_id)
+            )
+        except Exception:
+            pass
+
+    for id_chunk in chunks(
+        numeric,
+        5000,
+    ):
+
+        if not id_chunk:
+            continue
+
+        payload = {
+
+            "method": "get",
+
+            "params": {
+
+                "SelectionCriteria": {
+                    "Ids": id_chunk,
+                },
+
+                "FieldNames": [
+                    "Id",
+                    "Type",
+                    "Name",
+                    "PreviewUrl",
+                    "ThumbnailUrl",
+                    "Width",
+                    "Height",
+                    "Associated",
+                    "IsAdaptive",
+                ],
+
+                "Page": {
+                    "Limit": 5000,
+                    "Offset": 0,
+                },
+            }
+        }
+
+        result = direct_api(
+            "creatives",
+            payload,
+        )
+
+        for item in result.get(
+            "Creatives",
+            [],
+        ):
+
+            metadata[
+                str(item["Id"])
+            ] = item
+
+    return metadata
+
+
+# ============================================================
+# CAMPAIGN AGGREGATION
+# ============================================================
+
+def aggregate_campaigns(
+    rows,
+):
+
+    campaigns = {}
+
+    for row in rows:
+
+        cid = (
+            row["campaign_id"]
+        )
+
+        if not cid:
+            continue
+
+        if cid not in campaigns:
+
+            campaigns[cid] = {
+
+                "campaign_id": cid,
+
+                "name":
+                    row[
+                        "campaign_name"
+                    ],
+
+                "impressions": 0,
+
+                "clicks": 0,
+
+                "spend": 0.0,
+            }
+
+        item = campaigns[cid]
+
+        item["impressions"] += (
+            row["impressions"]
+        )
+
+        item["clicks"] += (
+            row["clicks"]
+        )
+
+        item["spend"] += (
+            row["cost"]
+        )
+
+    result = []
+
+    for item in (
+        campaigns.values()
+    ):
+
+        impressions = (
+            item["impressions"]
+        )
+
+        clicks = (
+            item["clicks"]
+        )
+
+        spend = (
+            item["spend"]
+        )
+
+        ctr = (
+            clicks
+            / impressions
+            * 100
+            if impressions
+            else 0
+        )
+
+        cpc = (
+            spend / clicks
+            if clicks
+            else 0
+        )
+
+        result.append({
+
+            **item,
+
+            "spend":
+                round(
+                    spend,
+                    2,
+                ),
+
+            "ctr":
+                round(
+                    ctr,
+                    3,
+                ),
+
+            "avg_cpc":
+                round(
+                    cpc,
+                    2,
+                ),
+        })
+
+    result.sort(
+        key=lambda x:
+            x["spend"],
+        reverse=True,
+    )
+
+    return result
+
+
+# ============================================================
+# WHICH ASSETS MATCH WHICH AD FORMAT?
+# ============================================================
+
+def assets_for_format(
+    assets,
+    ad_format,
+):
+
+    ad_format = (
+        ad_format
+        or ""
+    ).upper()
+
+    if ad_format in (
+        "IMAGE",
+        "ADAPTIVE_IMAGE",
+    ):
+
+        return [
+            asset
+            for asset in assets
+            if asset["kind"]
+            == "image"
+        ]
+
+    if ad_format == "VIDEO":
+
+        return [
+            asset
+            for asset in assets
+            if asset["kind"]
+            == "video"
+        ]
+
+    if ad_format in (
+        "SMART_MULTIPLE",
+        "SMART_SINGLE",
+        "SMART_TILE",
+    ):
+
+        return [
+            asset
+            for asset in assets
+            if asset["kind"]
+            == "smart"
+        ]
+
+    # TEXT-показы визуальному ассету
+    # не присваиваем.
+    return []
+
+
+# ============================================================
+# BUILD ASSET PERFORMANCE
+# ============================================================
+
+def build_asset_performance(
+    ad_rows,
+    ad_asset_map,
+):
+
+    performances = {}
+
+    def ensure_perf(
+        asset,
+        row,
+    ):
+
+        key = (
+            asset["asset_key"],
+            row["campaign_id"],
+            row["network"],
+        )
+
+        if key not in performances:
+
+            performances[key] = {
+
+                "asset_key":
+                    asset["asset_key"],
+
+                "asset_id":
+                    asset["asset_id"],
+
+                "kind":
+                    asset["kind"],
+
+                "source":
+                    asset["source"],
+
+                "campaign_id":
+                    row[
+                        "campaign_id"
+                    ],
+
+                "campaign_name":
+                    row[
+                        "campaign_name"
+                    ],
+
+                "network":
+                    row["network"],
+
+                "impressions": 0,
+
+                "clicks": 0,
+
+                "spend": 0.0,
+
+                "ad_ids": set(),
+
+                "ad_group_ids": set(),
+
+                "daily": [],
+
+                # Статистика, которую нельзя
+                # распределить между несколькими
+                # ассетами.
+                "shared_impressions": 0,
+
+                "shared_clicks": 0,
+
+                "shared_spend": 0.0,
+
+                "shared_ad_ids": set(),
+            }
+
+        return performances[key]
+
+    for row in ad_rows:
+
+        assets = (
+            ad_asset_map.get(
+                row["ad_id"],
+                [],
+            )
+        )
+
+        matching = (
+            assets_for_format(
+                assets,
+                row["ad_format"],
+            )
+        )
+
+        if not matching:
+            continue
+
+        # ====================================================
+        # ТОЧНАЯ АТРИБУЦИЯ:
+        # в этом формате объявления только один ассет
+        # ====================================================
+
+        if len(matching) == 1:
+
+            asset = matching[0]
+
+            perf = ensure_perf(
+                asset,
+                row,
+            )
+
+            perf["impressions"] += (
+                row["impressions"]
+            )
+
+            perf["clicks"] += (
+                row["clicks"]
+            )
+
+            perf["spend"] += (
+                row["cost"]
+            )
+
+            perf["ad_ids"].add(
+                row["ad_id"]
+            )
+
+            perf[
+                "ad_group_ids"
+            ].add(
+                row["ad_group_id"]
+            )
+
+            perf["daily"].append({
+
+                "date":
+                    row["date"],
+
+                "impressions":
+                    row[
+                        "impressions"
+                    ],
+
+                "clicks":
+                    row["clicks"],
+
+                "cost":
+                    row["cost"],
+            })
+
+        # ====================================================
+        # НЕВОЗМОЖНО ТОЧНО РАЗДЕЛИТЬ:
+        # responsive ad с несколькими картинками/видео
+        # ====================================================
+
+        else:
+
+            for asset in matching:
+
+                perf = ensure_perf(
+                    asset,
+                    row,
+                )
+
+                perf[
+                    "shared_impressions"
+                ] += (
+                    row["impressions"]
+                )
+
+                perf[
+                    "shared_clicks"
+                ] += (
+                    row["clicks"]
+                )
+
+                perf[
+                    "shared_spend"
+                ] += (
+                    row["cost"]
+                )
+
+                perf[
+                    "shared_ad_ids"
+                ].add(
+                    row["ad_id"]
+                )
+
+    result = []
+
+    for perf in (
+        performances.values()
+    ):
+
+        impressions = (
+            perf["impressions"]
+        )
+
+        clicks = (
+            perf["clicks"]
+        )
+
+        spend = (
+            perf["spend"]
+        )
+
+        perf["ctr"] = (
+            clicks
+            / impressions
+            * 100
+            if impressions
+            else 0
+        )
+
+        perf["avg_cpc"] = (
+            spend / clicks
+            if clicks
+            else 0
+        )
+
+        perf["spend"] = round(
+            spend,
+            2,
+        )
+
+        perf["ctr"] = round(
+            perf["ctr"],
+            3,
+        )
+
+        perf["avg_cpc"] = round(
+            perf["avg_cpc"],
+            2,
+        )
+
+        perf["shared_spend"] = round(
+            perf[
+                "shared_spend"
+            ],
+            2,
+        )
+
+        perf["ad_ids"] = sorted(
+            perf["ad_ids"]
+        )
+
+        perf["ad_group_ids"] = sorted(
+            perf[
+                "ad_group_ids"
+            ]
+        )
+
+        perf[
+            "shared_ad_ids"
+        ] = sorted(
+            perf[
+                "shared_ad_ids"
+            ]
+        )
+
+        result.append(perf)
+
+    return result
+
+
+# ============================================================
+# ADD PREVIEW / METADATA
+# ============================================================
+
+def enrich_asset_metadata(
+    performances,
+    asset_registry,
+    image_metadata,
+    creative_metadata,
+):
+
+    for perf in performances:
+
+        asset = (
+            asset_registry.get(
+                perf["asset_key"],
+                {},
+            )
+        )
+
+        perf["preview_url"] = (
+            asset.get(
+                "preview_url"
+            )
+        )
+
+        perf[
+            "thumbnail_url"
+        ] = (
+            asset.get(
+                "thumbnail_url"
+            )
+        )
+
+        perf["name"] = None
+
+        perf["width"] = None
+        perf["height"] = None
+
+        perf["asset_type"] = (
+            perf["kind"]
+        )
+
+        # ----------------------------------------
+        # ADIMAGE
+        # ----------------------------------------
+
+        if (
+            perf["asset_key"]
+            .startswith(
+                "image:"
+            )
+        ):
+
+            meta = (
+                image_metadata.get(
+                    perf["asset_id"],
+                    {},
+                )
+            )
+
+            perf["name"] = (
+                meta.get("Name")
+            )
+
+            perf["preview_url"] = (
+                meta.get(
+                    "PreviewUrl"
+                )
+                or perf[
+                    "preview_url"
+                ]
+            )
+
+            perf["original_url"] = (
+                meta.get(
+                    "OriginalUrl"
+                )
+            )
+
+            perf["asset_type"] = (
+                meta.get("Type")
+                or "IMAGE"
+            )
+
+            perf["subtype"] = (
+                meta.get(
+                    "Subtype"
+                )
+            )
+
+        # ----------------------------------------
+        # CREATIVE ID
+        # ----------------------------------------
+
+        else:
+
+            meta = (
+                creative_metadata.get(
+                    perf["asset_id"],
+                    {},
+                )
+            )
+
+            perf["name"] = (
+                meta.get("Name")
+            )
+
+            perf["preview_url"] = (
+                meta.get(
+                    "PreviewUrl"
+                )
+                or perf[
+                    "preview_url"
+                ]
+            )
+
+            perf[
+                "thumbnail_url"
+            ] = (
+                meta.get(
+                    "ThumbnailUrl"
+                )
+                or perf[
+                    "thumbnail_url"
+                ]
+            )
+
+            perf["asset_type"] = (
+                meta.get("Type")
+                or perf["kind"]
+            )
+
+            perf["width"] = (
+                meta.get("Width")
+            )
+
+            perf["height"] = (
+                meta.get("Height")
+            )
+
+
+# ============================================================
+# TREND
+# ============================================================
+
+def period_stats(
+    rows,
+    start_date,
+    end_date,
+):
+
+    impressions = 0
+    clicks = 0
+    spend = 0.0
+
+    for row in rows:
+
+        try:
+            day = (
+                datetime.strptime(
+                    row["date"],
+                    "%Y-%m-%d",
+                ).date()
+            )
+        except Exception:
+            continue
+
+        if not (
+            start_date
+            <= day
+            <= end_date
+        ):
+            continue
+
+        impressions += (
+            row["impressions"]
+        )
+
+        clicks += (
+            row["clicks"]
+        )
+
+        spend += (
+            row["cost"]
+        )
+
+    ctr = (
+        clicks
+        / impressions
+        * 100
+        if impressions
+        else 0
+    )
+
+    cpc = (
+        spend / clicks
+        if clicks
+        else 0
+    )
+
+    return {
+        "impressions":
+            impressions,
+
+        "clicks":
+            clicks,
+
+        "spend":
+            round(
+                spend,
+                2,
+            ),
+
+        "ctr":
+            round(
+                ctr,
+                3,
+            ),
+
+        "cpc":
+            round(
+                cpc,
+                2,
+            ),
+    }
+
+
+def calculate_trend(
+    perf,
+):
+
+    today = (
+        datetime.now(
+            timezone.utc
+        ).date()
+    )
+
+    current_end = (
+        today
+        - timedelta(days=1)
+    )
+
+    current_start = (
+        current_end
+        - timedelta(
+            days=TREND_DAYS - 1
+        )
+    )
+
+    previous_end = (
+        current_start
+        - timedelta(days=1)
+    )
+
+    previous_start = (
+        previous_end
+        - timedelta(
+            days=TREND_DAYS - 1
+        )
+    )
+
+    current = period_stats(
+        perf["daily"],
+        current_start,
+        current_end,
+    )
+
+    previous = period_stats(
+        perf["daily"],
+        previous_start,
+        previous_end,
+    )
+
+    ctr_change = (
+        percent_change(
+            current["ctr"],
+            previous["ctr"],
+        )
+    )
+
+    cpc_change = (
+        percent_change(
+            current["cpc"],
+            previous["cpc"],
+        )
+    )
+
+    status = "stable"
+
+    if (
+        current["clicks"] < 5
+        or previous["clicks"] < 5
+    ):
+
+        status = (
+            "insufficient_data"
+        )
+
+    elif (
+        ctr_change <= -20
+        and cpc_change >= 15
+    ):
+
+        status = "fatigue"
+
+    elif (
+        ctr_change >= 20
+        and cpc_change <= -10
+    ):
+
+        status = "improving"
+
+    elif ctr_change <= -20:
+
+        status = (
+            "ctr_declining"
+        )
+
+    elif cpc_change >= 20:
+
+        status = (
+            "cpc_growing"
+        )
+
+    return {
+
+        "current_7d": current,
+
+        "previous_7d": previous,
+
+        "ctr_change":
+            round(
+                ctr_change,
+                1,
+            ),
+
+        "cpc_change":
+            round(
+                cpc_change,
+                1,
+            ),
+
+        "status":
+            status,
+    }
+
+
+# ============================================================
+# BASELINES
+# ============================================================
+
+def build_baselines(
+    performances,
+):
+
+    groups = defaultdict(list)
+
+    for perf in performances:
+
+        if (
+            perf["clicks"]
+            < MIN_CLICKS_FOR_BASELINE
+        ):
+            continue
+
+        # Никакие shared-показы
+        # в baseline не включаем.
+        if (
+            perf["impressions"]
+            <= 0
+        ):
+            continue
+
+        key = (
+            perf["campaign_id"],
+            perf["network"],
+            perf["kind"],
+        )
+
+        groups[key].append(
+            perf
+        )
+
+    baselines = {}
+
+    for key, items in (
+        groups.items()
+    ):
+
+        valid_ctr = [
+            item["ctr"]
+            for item in items
+            if item["ctr"] > 0
+        ]
+
+        valid_cpc = [
+            item["avg_cpc"]
+            for item in items
+            if item[
+                "avg_cpc"
+            ] > 0
+        ]
+
+        baselines[key] = {
+
+            "count":
+                len(items),
+
+            "ctr":
+                (
+                    median(valid_ctr)
+                    if valid_ctr
+                    else 0
+                ),
+
+            "cpc":
+                (
+                    median(valid_cpc)
+                    if valid_cpc
+                    else 0
+                ),
+        }
+
+    return baselines
+
+
+# ============================================================
+# SCORE
+# ============================================================
+
+def analyze_performance(
+    perf,
+    baseline,
+):
+
+    # Только shared статистика.
+    if (
+        perf["impressions"] == 0
+        and perf[
+            "shared_impressions"
+        ] > 0
+    ):
+
+        return {
+
+            "score": None,
+
+            "status":
+                "unattributable",
+
+            "reason": (
+                "В этом объявлении "
+                "несколько визуальных "
+                "ассетов. Direct не "
+                "показывает статистику "
+                "каждого отдельно."
+            ),
+        }
+
+    if (
+        perf["clicks"]
+        < MIN_CLICKS_FOR_SCORE
+    ):
+
+        return {
+
+            "score": None,
+
+            "status":
+                "insufficient_data",
+
+            "reason": (
+                f"Для оценки нужно "
+                f"минимум "
+                f"{MIN_CLICKS_FOR_SCORE} "
+                f"кликов."
+            ),
+        }
+
+    if (
+        not baseline
+        or baseline["count"] < 2
+        or baseline["ctr"] <= 0
+        or baseline["cpc"] <= 0
+    ):
+
+        return {
+
+            "score": None,
+
+            "status":
+                "no_peers",
+
+            "reason": (
+                "Недостаточно "
+                "сопоставимых креативов "
+                "в этой кампании."
+            ),
+        }
+
+    ctr_ratio = (
+        perf["ctr"]
+        / baseline["ctr"]
+    )
+
+    cpc_ratio = (
+        baseline["cpc"]
+        / perf["avg_cpc"]
+        if perf["avg_cpc"] > 0
+        else 1
+    )
+
+    # ----------------------------------------
+    # CTR component
+    #
+    # 0.5x baseline => 0
+    # 1.0x baseline => 50
+    # 1.5x baseline => 100
+    # ----------------------------------------
+
+    ctr_component = clamp(
+        (
+            50
+            + (
+                ctr_ratio - 1
+            ) * 100
+        ),
+        0,
+        100,
+    )
+
+    # ----------------------------------------
+    # CPC component
+    #
+    # CPC ниже baseline => больше score
+    # ----------------------------------------
+
+    cpc_component = clamp(
+        (
+            50
+            + (
+                cpc_ratio - 1
+            ) * 100
+        ),
+        0,
+        100,
+    )
+
+    score = round(
+        (
+            ctr_component * 0.60
+            + cpc_component * 0.40
+        )
+    )
+
+    if score >= 70:
+
+        status = "successful"
+
+        reason = (
+            "CTR/CPC лучше "
+            "сопоставимых креативов."
+        )
+
+    elif score >= 45:
+
+        status = "normal"
+
+        reason = (
+            "Результат близок "
+            "к медиане кампании."
+        )
+
+    else:
+
+        status = "weak"
+
+        reason = (
+            "Уступает сопоставимым "
+            "креативам по CTR/CPC."
+        )
+
+    return {
+
+        "score":
+            int(score),
+
+        "status":
+            status,
+
+        "reason":
+            reason,
+
+        "ctr_ratio":
+            round(
+                ctr_ratio,
+                2,
+            ),
+
+        "cpc_ratio":
+            round(
+                cpc_ratio,
+                2,
+            ),
+
+        "baseline_ctr":
+            round(
+                baseline["ctr"],
+                3,
+            ),
+
+        "baseline_cpc":
+            round(
+                baseline["cpc"],
+                2,
+            ),
+    }
+
+
+# ============================================================
+# FINAL CREATIVE ANALYSIS
+# ============================================================
+
+def analyze_assets(
+    performances,
+):
+
+    baselines = (
+        build_baselines(
+            performances
+        )
+    )
+
+    output = []
+
+    for perf in performances:
+
+        key = (
+            perf["campaign_id"],
+            perf["network"],
+            perf["kind"],
+        )
+
+        baseline = (
+            baselines.get(key)
+        )
+
+        analysis = (
+            analyze_performance(
+                perf,
+                baseline,
+            )
+        )
+
+        trend = (
+            calculate_trend(
+                perf
+            )
+        )
+
+        final_status = (
+            analysis["status"]
+        )
+
+        # Trend переопределяет только
+        # те ассеты, которые уже можно
+        # нормально оценивать.
+        if (
+            final_status
+            not in (
+                "unattributable",
+                "insufficient_data",
+                "no_peers",
+            )
+        ):
+
+            if (
+                trend["status"]
+                == "fatigue"
+            ):
+
+                final_status = (
+                    "fatigue"
+                )
+
+            elif (
+                trend["status"]
+                == "improving"
+            ):
+
+                final_status = (
+                    "improving"
+                )
+
+        result = {
+
+            **{
+                key: value
+                for key, value
+                in perf.items()
+                if key != "daily"
+            },
+
+            **analysis,
+
+            "status":
+                final_status,
+
+            "base_status":
+                analysis["status"],
+
+            "trend":
+                trend,
+        }
+
+        output.append(result)
+
+    priority = {
+
+        "fatigue": 0,
+
+        "weak": 1,
+
+        "improving": 2,
+
+        "successful": 3,
+
+        "normal": 4,
+
+        "insufficient_data": 5,
+
+        "no_peers": 6,
+
+        "unattributable": 7,
+    }
+
+    output.sort(
+        key=lambda item: (
+            priority.get(
+                item["status"],
+                99,
+            ),
+            -item.get(
+                "spend",
+                0,
+            ),
+        )
+    )
+
+    return output
+
+
+# ============================================================
+# CREATIVE SUMMARY
+# ============================================================
+
+def creative_summary(
+    creatives,
+):
+
+    counts = defaultdict(int)
+
+    for creative in creatives:
+
+        counts[
+            creative["status"]
+        ] += 1
+
+    return {
+
+        "total":
+            len(creatives),
+
+        "successful":
+            counts["successful"],
+
+        "normal":
+            counts["normal"],
+
+        "weak":
+            counts["weak"],
+
+        "fatigue":
+            counts["fatigue"],
+
+        "improving":
+            counts["improving"],
+
+        "insufficient_data":
+            counts[
+                "insufficient_data"
+            ],
+
+        "no_peers":
+            counts["no_peers"],
+
+        "unattributable":
+            counts[
+                "unattributable"
+            ],
+    }
+
+
+# ============================================================
+# TOTAL SUMMARY
+# ============================================================
+
+def total_summary(
+    campaigns,
+):
+
+    impressions = sum(
+        item["impressions"]
+        for item in campaigns
+    )
+
+    clicks = sum(
+        item["clicks"]
+        for item in campaigns
+    )
+
+    spend = sum(
+        item["spend"]
+        for item in campaigns
+    )
+
+    ctr = (
+        clicks
+        / impressions
+        * 100
+        if impressions
+        else 0
+    )
+
+    cpc = (
+        spend / clicks
+        if clicks
+        else 0
+    )
+
+    return {
+
+        "spend":
+            round(
+                spend,
+                2,
+            ),
+
+        "impressions":
+            impressions,
+
+        "clicks":
+            clicks,
+
+        "ctr":
+            round(
+                ctr,
+                3,
+            ),
+
+        "avg_cpc":
+            round(
+                cpc,
+                2,
+            ),
+    }
+
+
+# ============================================================
+# BUILD
+# ============================================================
+
+def build_report():
+
+    print(
+        "1/6 Campaign report",
+        flush=True,
+    )
+
+    campaign_rows = (
+        get_campaign_rows()
+    )
+
+    print(
+        "2/6 Ad performance report",
+        flush=True,
+    )
+
+    ad_rows = get_ad_rows()
+
+    ad_ids = sorted({
+        row["ad_id"]
+        for row in ad_rows
+    })
+
+    print(
+        "3/6 Ads.get",
+        flush=True,
+    )
+
+    ads = get_ads(
+        ad_ids
+    )
+
+    # ----------------------------------------
+    # Ad -> visual assets
+    # ----------------------------------------
+
+    ad_asset_map = {}
+
+    asset_registry = {}
+
+    for ad_id, ad in (
+        ads.items()
+    ):
+
+        assets = (
+            extract_ad_assets(
+                ad
+            )
+        )
+
+        ad_asset_map[
+            ad_id
+        ] = assets
+
+        for asset in assets:
+
+            key = (
+                asset["asset_key"]
+            )
+
+            if key not in (
+                asset_registry
+            ):
+
+                asset_registry[
+                    key
+                ] = asset.copy()
+
+    print(
+        "Unique visual assets:",
+        len(asset_registry),
+        flush=True,
+    )
+
+    image_hashes = [
+        asset["asset_id"]
+        for asset
+        in asset_registry.values()
+        if asset["asset_key"]
+        .startswith("image:")
+    ]
+
+    creative_ids = [
+        asset["asset_id"]
+        for asset
+        in asset_registry.values()
+        if asset["asset_key"]
+        .startswith("creative:")
+    ]
+
+    print(
+        "4/6 AdImages.get",
+        flush=True,
+    )
+
+    image_meta = (
+        get_adimage_metadata(
+            image_hashes
+        )
+    )
+
+    print(
+        "5/6 Creatives.get",
+        flush=True,
+    )
+
+    creative_meta = (
+        get_creative_metadata(
+            creative_ids
+        )
+    )
+
+    print(
+        "6/6 Calculate creative stats",
+        flush=True,
+    )
+
+    performance = (
+        build_asset_performance(
+            ad_rows,
+            ad_asset_map,
+        )
+    )
+
+    enrich_asset_metadata(
+        performance,
+        asset_registry,
+        image_meta,
+        creative_meta,
+    )
+
+    creatives = (
+        analyze_assets(
+            performance
+        )
+    )
+
+    campaigns = (
+        aggregate_campaigns(
+            campaign_rows
+        )
+    )
+
+    report = {
+
+        "meta": {
+
+            "updated_at":
+                datetime.now(
+                    timezone.utc
+                ).isoformat(),
+
+            "source":
+                "yandex_direct",
+
+            "period_days":
+                REPORT_DAYS,
+
+            "creative_method":
+                "visual_asset_v2",
+
+            "min_clicks":
+                MIN_CLICKS_FOR_SCORE,
+        },
+
+        "summary":
+            total_summary(
+                campaigns
+            ),
+
+        "campaigns":
+            campaigns,
+
+        "creative_summary":
+            creative_summary(
+                creatives
+            ),
+
+        "creatives":
+            creatives,
+
+        "daily":
+            campaign_rows,
+    }
+
+    print(
+        "Creative summary:",
+        report[
+            "creative_summary"
+        ],
+        flush=True,
+    )
+
+    return report
+
+
+# ============================================================
+# ENCRYPTION
+# ============================================================
+
+def derive_key(
+    password,
+    salt,
+):
+
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode(
+            "utf-8"
+        ),
+        salt,
+        PBKDF2_ITERATIONS,
+        dklen=32,
+    )
+
+
+def encrypt_report(
+    report,
+):
+
+    plaintext = json.dumps(
+        report,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    salt = (
+        secrets.token_bytes(16)
+    )
+
+    nonce = (
+        secrets.token_bytes(12)
+    )
+
+    key = derive_key(
+        REPORT_PASSWORD,
+        salt,
+    )
+
+    aes = AESGCM(key)
+
+    ciphertext = aes.encrypt(
+        nonce,
+        plaintext,
+        None,
+    )
+
+    return {
+
+        "version": 2,
+
+        "kdf":
+            "PBKDF2-SHA256",
+
+        "iterations":
+            PBKDF2_ITERATIONS,
+
+        "cipher":
+            "AES-256-GCM",
+
+        "salt":
+            base64.b64encode(
+                salt
+            ).decode("ascii"),
+
+        "nonce":
+            base64.b64encode(
+                nonce
+            ).decode("ascii"),
+
+        "ciphertext":
+            base64.b64encode(
+                ciphertext
+            ).decode("ascii"),
+    }
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    report = build_report()
+
+    encrypted = (
+        encrypt_report(
+            report
+        )
+    )
+
+    OUT.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    OUT.write_text(
+        json.dumps(
+            encrypted,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+    print(
+        "Encrypted report saved:",
+        OUT,
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    main()
