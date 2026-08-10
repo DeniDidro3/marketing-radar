@@ -743,300 +743,217 @@ def creative_asset(
 def extract_ad_assets(ad):
     assets = []
 
-    ad_type = ad.get(
-        "Type",
-        ""
-    )
+    def safe_block(name):
+        value = ad.get(name)
+        return value if isinstance(value, dict) else {}
 
-    subtype = ad.get(
-        "Subtype",
-        ""
-    )
+    def add_image(hash_value, source, mode):
+        if hash_value:
+            asset = image_asset(
+                hash_value,
+                source,
+            )
 
-    # --------------------------------------------------------
-    # TEXT_AD
-    # --------------------------------------------------------
+            if asset:
+                asset["ad_asset_mode"] = mode
+                assets.append(asset)
 
-    text_ad = ad.get(
+    def add_creative(value, kind, source, mode):
+        if isinstance(value, dict):
+            asset = creative_asset(
+                value,
+                kind,
+                source,
+            )
+
+            if asset:
+                asset["ad_asset_mode"] = mode
+                assets.append(asset)
+
+
+    # TEXT AD
+    text_ad = safe_block(
         "TextAd"
     )
 
-    if text_ad:
-        asset = image_asset(
-            text_ad.get(
-                "AdImageHash"
-            ),
-            "TextAd.AdImageHash",
-        )
+    add_image(
+        text_ad.get(
+            "AdImageHash"
+        ),
+        "TextAd.AdImageHash",
+        "single_image_extension",
+    )
 
-        if asset:
-            asset["ad_asset_mode"] = (
-                "single_image_extension"
-            )
+    add_creative(
+        text_ad.get(
+            "VideoExtension"
+        ),
+        "video",
+        "TextAd.VideoExtension",
+        "single_video_extension",
+    )
 
-            assets.append(asset)
 
-        asset = creative_asset(
-            text_ad.get(
-                "VideoExtension"
-            ),
-            "video",
-            "TextAd.VideoExtension",
-        )
-
-        if asset:
-            asset["ad_asset_mode"] = (
-                "single_video_extension"
-            )
-
-            assets.append(asset)
-
-    # --------------------------------------------------------
     # DYNAMIC TEXT
-    # --------------------------------------------------------
-
-    dynamic = ad.get(
+    dynamic = safe_block(
         "DynamicTextAd"
     )
 
-    if dynamic:
-        asset = image_asset(
-            dynamic.get(
-                "AdImageHash"
-            ),
-            "DynamicTextAd.AdImageHash",
-        )
+    add_image(
+        dynamic.get(
+            "AdImageHash"
+        ),
+        "DynamicTextAd.AdImageHash",
+        "single_image_extension",
+    )
 
-        if asset:
-            asset["ad_asset_mode"] = (
-                "single_image_extension"
-            )
 
-            assets.append(asset)
-
-    # --------------------------------------------------------
     # MOBILE APP
-    # --------------------------------------------------------
-
-    mobile = ad.get(
+    mobile = safe_block(
         "MobileAppAd"
     )
 
-    if mobile:
-        asset = image_asset(
-            mobile.get(
-                "AdImageHash"
-            ),
-            "MobileAppAd.AdImageHash",
-        )
+    add_image(
+        mobile.get(
+            "AdImageHash"
+        ),
+        "MobileAppAd.AdImageHash",
+        "single_image_extension",
+    )
 
-        if asset:
-            asset["ad_asset_mode"] = (
-                "single_image_extension"
-            )
+    add_creative(
+        mobile.get(
+            "VideoExtension"
+        ),
+        "video",
+        "MobileAppAd.VideoExtension",
+        "single_video_extension",
+    )
 
-            assets.append(asset)
 
-        asset = creative_asset(
-            mobile.get(
-                "VideoExtension"
-            ),
-            "video",
-            "MobileAppAd.VideoExtension",
-        )
-
-        if asset:
-            asset["ad_asset_mode"] = (
-                "single_video_extension"
-            )
-
-            assets.append(asset)
-
-    # --------------------------------------------------------
-    # IMAGE_AD — uploaded image
-    # --------------------------------------------------------
-
-    for block_name in (
+    # IMAGE ADS
+    for block_name in [
         "TextImageAd",
         "MobileAppImageAd",
-    ):
-        block = ad.get(
+    ]:
+
+        block = safe_block(
             block_name
         )
 
-        if not block:
-            continue
-
-        asset = image_asset(
+        add_image(
             block.get(
                 "AdImageHash"
             ),
             f"{block_name}.AdImageHash",
+            "dedicated_image_ad",
         )
 
-        if asset:
-            asset["ad_asset_mode"] = (
-                "dedicated_image_ad"
-            )
 
-            assets.append(asset)
-
-    # --------------------------------------------------------
-    # IMAGE BUILDER
-    # --------------------------------------------------------
-
-    for block_name in (
+    # BUILDER IMAGE
+    for block_name in [
         "TextAdBuilderAd",
         "MobileAppAdBuilderAd",
         "CpmBannerAdBuilderAd",
-    ):
-        block = ad.get(
+    ]:
+
+        block = safe_block(
             block_name
         )
 
-        if not block:
-            continue
-
-        asset = creative_asset(
+        add_creative(
             block.get(
                 "Creative"
             ),
             "image",
             f"{block_name}.Creative",
+            "dedicated_image_ad",
         )
 
-        if asset:
-            asset["ad_asset_mode"] = (
-                "dedicated_image_ad"
-            )
 
-            assets.append(asset)
-
-    # --------------------------------------------------------
-    # VIDEO BUILDER
-    # --------------------------------------------------------
-
-    for block_name in (
+    # VIDEO
+    for block_name in [
         "MobileAppCpcVideoAdBuilderAd",
         "CpcVideoAdBuilderAd",
         "CpmVideoAdBuilderAd",
-    ):
-        block = ad.get(
+    ]:
+
+        block = safe_block(
             block_name
         )
 
-        if not block:
-            continue
-
-        asset = creative_asset(
+        add_creative(
             block.get(
                 "Creative"
             ),
             "video",
             f"{block_name}.Creative",
+            "dedicated_video_ad",
         )
 
-        if asset:
-            asset["ad_asset_mode"] = (
-                "dedicated_video_ad"
-            )
 
-            assets.append(asset)
-
-    # --------------------------------------------------------
     # SMART
-    # --------------------------------------------------------
-
-    smart = ad.get(
+    smart = safe_block(
         "SmartAdBuilderAd"
     )
 
-    if smart:
-        asset = creative_asset(
-            smart.get(
-                "Creative"
-            ),
-            "smart",
-            "SmartAdBuilderAd.Creative",
-        )
+    add_creative(
+        smart.get(
+            "Creative"
+        ),
+        "smart",
+        "SmartAdBuilderAd.Creative",
+        "dedicated_smart_ad",
+    )
 
-        if asset:
-            asset["ad_asset_mode"] = (
-                "dedicated_smart_ad"
-            )
 
-            assets.append(asset)
-
-    # --------------------------------------------------------
-    # RESPONSIVE / COMBINATORIAL
-    # --------------------------------------------------------
-
-    responsive = ad.get(
+    # RESPONSIVE
+    responsive = safe_block(
         "ResponsiveAd"
     )
 
-    if responsive:
-        image_items = (
-            responsive
-            .get(
-                "AdImages",
-                {}
-            )
-            .get(
-                "Items",
-                []
-            )
-            or []
-        )
+    ad_images = safe_block(
+        "AdImages"
+    )
 
-        for image in image_items:
-            asset = image_asset(
+    for image in (
+        ad_images.get(
+            "Items",
+            []
+        ) or []
+    ):
+
+        if isinstance(image, dict):
+
+            add_image(
                 image.get(
                     "ImageHash"
                 ),
                 "ResponsiveAd.AdImages",
+                "responsive_multi",
             )
 
-            if asset:
-                asset["ad_asset_mode"] = (
-                    "responsive_multi"
-                )
 
-                assets.append(asset)
+    video_extensions = safe_block(
+        "VideoExtensions"
+    )
 
-        video_items = (
-            responsive
-            .get(
-                "VideoExtensions",
-                {}
-            )
-            .get(
-                "Items",
-                []
-            )
-            or []
+    for video in (
+        video_extensions.get(
+            "Items",
+            []
+        ) or []
+    ):
+
+        add_creative(
+            video,
+            "video",
+            "ResponsiveAd.VideoExtensions",
+            "responsive_multi",
         )
 
-        for video in video_items:
-            asset = creative_asset(
-                video,
-                "video",
-                (
-                    "ResponsiveAd."
-                    "VideoExtensions"
-                ),
-            )
 
-            if asset:
-                asset["ad_asset_mode"] = (
-                    "responsive_multi"
-                )
-
-                assets.append(asset)
-
-    # --------------------------------------------------------
-    # DEDUP
-    # --------------------------------------------------------
+    # REMOVE DUPLICATES
 
     unique = {}
 
@@ -1044,6 +961,7 @@ def extract_ad_assets(ad):
         unique[
             asset["asset_key"]
         ] = asset
+
 
     return list(
         unique.values()
