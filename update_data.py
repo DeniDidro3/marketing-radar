@@ -290,17 +290,18 @@ def get_campaign_rows():
         "Impressions",
         "Clicks",
         "Cost",
+        "Conversions",
     ]
 
     text = request_report(
-        "MR Campaign v5",
+        "MR Campaign v6",
         "CAMPAIGN_PERFORMANCE_REPORT",
         fields,
     )
 
     reader = csv.reader(
         io.StringIO(text),
-        delimiter="\t",
+        delimiter="	",
     )
 
     rows = []
@@ -342,6 +343,10 @@ def get_campaign_rows():
 
             "cost": safe_float(
                 row.get("Cost")
+            ),
+
+            "conversions": safe_float(
+                row.get("Conversions")
             ),
         })
 
@@ -2364,6 +2369,18 @@ def analyze_assets(
 # ============================================================
 
 def get_keyword_rows():
+    """
+    Статистика именно по ключевым фразам, заданным в Директе.
+
+    Используем CRITERIA_PERFORMANCE_REPORT, а не
+    SEARCH_QUERY_PERFORMANCE_REPORT: последний группируется
+    по фактическому поисковому запросу пользователя.
+
+    В итог попадают только CriterionType == KEYWORD.
+    Одна и та же фраза из нескольких кампаний агрегируется
+    в одну строку, чтобы было видно её результат по аккаунту.
+    """
+
     fields = [
         "Date",
         "CampaignId",
@@ -2372,6 +2389,7 @@ def get_keyword_rows():
         "AdGroupName",
         "CriterionId",
         "Criterion",
+        "CriterionType",
         "Impressions",
         "Clicks",
         "Cost",
@@ -2379,103 +2397,537 @@ def get_keyword_rows():
     ]
 
     text = request_report(
-        "MR Keywords Performance v5",
-        "SEARCH_QUERY_PERFORMANCE_REPORT",
+        "MR Keyword Criteria v6",
+        "CRITERIA_PERFORMANCE_REPORT",
         fields,
     )
 
     reader = csv.reader(
         io.StringIO(text),
-        delimiter="\t",
+        delimiter="	",
     )
 
     grouped = {}
 
     for values in reader:
-        if not values or len(values) < len(fields):
+        if not values:
             continue
 
-        row = dict(zip(fields, values))
-
-        keyword = row.get("Criterion", "").strip()
-
-        if not keyword or keyword in ("-", "--"):
+        if len(values) < len(fields):
             continue
 
-        key = (
-            keyword.lower(),
-            row.get("CampaignId", ""),
+        row = dict(
+            zip(fields, values)
         )
 
-        if key not in grouped:
-            grouped[key] = {
+        criterion_type = str(
+            row.get(
+                "CriterionType",
+                ""
+            )
+        ).strip().upper()
+
+        # В разделе "Ключевые фразы" показываем
+        # только реально заданные рекламодателем ключи.
+        if criterion_type != "KEYWORD":
+            continue
+
+        keyword = str(
+            row.get(
+                "Criterion",
+                ""
+            )
+        ).strip()
+
+        if keyword in (
+            "",
+            "-",
+            "--",
+        ):
+            continue
+
+        normalized = (
+            " ".join(
+                keyword.lower().split()
+            )
+        )
+
+        if normalized not in grouped:
+            grouped[normalized] = {
                 "keyword": keyword,
-                "campaign_id": row.get("CampaignId", ""),
-                "campaign_name": row.get("CampaignName", ""),
-                "ad_group_id": row.get("AdGroupId", ""),
-                "ad_group_name": row.get("AdGroupName", ""),
+                "criterion_type": criterion_type,
+                "criterion_ids": set(),
+                "campaign_ids": set(),
+                "campaign_names": set(),
+                "ad_group_ids": set(),
+                "ad_group_names": set(),
                 "impressions": 0,
                 "clicks": 0,
-                "cost": 0,
-                "conversions": 0,
+                "cost": 0.0,
+                "conversions": 0.0,
             }
 
-        item = grouped[key]
+        item = grouped[normalized]
 
-        item["impressions"] += safe_int(row.get("Impressions"))
-        item["clicks"] += safe_int(row.get("Clicks"))
-        item["cost"] += safe_float(row.get("Cost"))
-        item["conversions"] += safe_float(row.get("Conversions"))
+        criterion_id = str(
+            row.get(
+                "CriterionId",
+                ""
+            )
+        ).strip()
+
+        campaign_id = str(
+            row.get(
+                "CampaignId",
+                ""
+            )
+        ).strip()
+
+        campaign_name = str(
+            row.get(
+                "CampaignName",
+                ""
+            )
+        ).strip()
+
+        ad_group_id = str(
+            row.get(
+                "AdGroupId",
+                ""
+            )
+        ).strip()
+
+        ad_group_name = str(
+            row.get(
+                "AdGroupName",
+                ""
+            )
+        ).strip()
+
+        if criterion_id not in (
+            "",
+            "-",
+            "--",
+        ):
+            item[
+                "criterion_ids"
+            ].add(
+                criterion_id
+            )
+
+        if campaign_id not in (
+            "",
+            "-",
+            "--",
+        ):
+            item[
+                "campaign_ids"
+            ].add(
+                campaign_id
+            )
+
+        if campaign_name not in (
+            "",
+            "-",
+            "--",
+        ):
+            item[
+                "campaign_names"
+            ].add(
+                campaign_name
+            )
+
+        if ad_group_id not in (
+            "",
+            "-",
+            "--",
+        ):
+            item[
+                "ad_group_ids"
+            ].add(
+                ad_group_id
+            )
+
+        if ad_group_name not in (
+            "",
+            "-",
+            "--",
+        ):
+            item[
+                "ad_group_names"
+            ].add(
+                ad_group_name
+            )
+
+        item[
+            "impressions"
+        ] += safe_int(
+            row.get(
+                "Impressions"
+            )
+        )
+
+        item[
+            "clicks"
+        ] += safe_int(
+            row.get(
+                "Clicks"
+            )
+        )
+
+        item[
+            "cost"
+        ] += safe_float(
+            row.get(
+                "Cost"
+            )
+        )
+
+        item[
+            "conversions"
+        ] += safe_float(
+            row.get(
+                "Conversions"
+            )
+        )
 
     result = []
 
     for item in grouped.values():
+        impressions = item[
+            "impressions"
+        ]
 
-        cpa = (
-            item["cost"] / item["conversions"]
-            if item["conversions"] > 0
-            else 0
-        )
+        clicks = item[
+            "clicks"
+        ]
+
+        cost = item[
+            "cost"
+        ]
+
+        conversions = item[
+            "conversions"
+        ]
 
         ctr = (
-            item["clicks"] / item["impressions"] * 100
-            if item["impressions"] > 0
+            clicks
+            / impressions
+            * 100
+            if impressions > 0
             else 0
         )
 
-        score = 0
+        cpc = (
+            cost
+            / clicks
+            if clicks > 0
+            else 0
+        )
 
-        if item["conversions"] > 0:
-            score += 50
+        conversion_rate = (
+            conversions
+            / clicks
+            * 100
+            if clicks > 0
+            else 0
+        )
 
-        if item["clicks"] >= 20:
-            score += 25
+        cpa = (
+            cost
+            / conversions
+            if conversions > 0
+            else 0
+        )
 
-        if cpa > 0:
-            score += 25
+        result.append({
+            "keyword": item[
+                "keyword"
+            ],
 
-        item.update({
-            "ctr": round(ctr, 3),
-            "cpa": round(cpa, 2),
-            "score": score,
-            "status": (
-                "winner"
-                if score >= 70
-                else "needs_data"
-                if score >= 40
-                else "weak"
+            "criterion_type": item[
+                "criterion_type"
+            ],
+
+            "criterion_ids": sorted(
+                item[
+                    "criterion_ids"
+                ]
+            ),
+
+            "campaign_ids": sorted(
+                item[
+                    "campaign_ids"
+                ]
+            ),
+
+            "campaign_names": sorted(
+                item[
+                    "campaign_names"
+                ]
+            ),
+
+            "campaign_count": len(
+                item[
+                    "campaign_ids"
+                ]
+            ),
+
+            "ad_group_ids": sorted(
+                item[
+                    "ad_group_ids"
+                ]
+            ),
+
+            "ad_group_names": sorted(
+                item[
+                    "ad_group_names"
+                ]
+            ),
+
+            "impressions": impressions,
+
+            "clicks": clicks,
+
+            "cost": round(
+                cost,
+                2
+            ),
+
+            "conversions": round(
+                conversions,
+                2
+            ),
+
+            "ctr": round(
+                ctr,
+                3
+            ),
+
+            "avg_cpc": round(
+                cpc,
+                2
+            ),
+
+            "conversion_rate": round(
+                conversion_rate,
+                3
+            ),
+
+            "cpa": round(
+                cpa,
+                2
             ),
         })
 
-        result.append(item)
-
     result.sort(
-        key=lambda x: (
-            x["conversions"],
-            -x["cpa"] if x["cpa"] > 0 else 0,
-        ),
-        reverse=True,
+        key=lambda item: (
+            -item[
+                "conversions"
+            ],
+            item[
+                "cpa"
+            ] if item[
+                "cpa"
+            ] > 0 else float(
+                "inf"
+            ),
+            -item[
+                "clicks"
+            ],
+        )
     )
+
+    converting = [
+        item
+        for item in result
+        if item[
+            "conversions"
+        ] > 0
+    ]
+
+    cpa_values = [
+        item[
+            "cpa"
+        ]
+        for item in converting
+        if item[
+            "cpa"
+        ] > 0
+    ]
+
+    median_cpa = (
+        median(
+            cpa_values
+        )
+        if cpa_values
+        else 0
+    )
+
+    max_conversions = max(
+        (
+            item[
+                "conversions"
+            ]
+            for item in converting
+        ),
+        default=0,
+    )
+
+    top_count = max(
+        1,
+        int(
+            len(
+                converting
+            )
+            * 0.20
+            + 0.999
+        )
+    )
+
+    converting_ranks = {
+        item[
+            "keyword"
+        ].lower(): rank
+        for rank, item in enumerate(
+            converting,
+            start=1,
+        )
+    }
+
+    for index, item in enumerate(
+        result,
+        start=1,
+    ):
+        conversions = item[
+            "conversions"
+        ]
+
+        cpa = item[
+            "cpa"
+        ]
+
+        clicks = item[
+            "clicks"
+        ]
+
+        if conversions > 0:
+            converting_rank = (
+                converting_ranks.get(
+                    item[
+                        "keyword"
+                    ].lower()
+                )
+            )
+
+            if (
+                converting_rank is not None
+                and converting_rank
+                <= top_count
+                and (
+                    median_cpa <= 0
+                    or cpa
+                    <= median_cpa
+                    * 1.20
+                )
+            ):
+                status = "winner"
+
+            elif (
+                median_cpa > 0
+                and cpa
+                <= median_cpa
+            ):
+                status = "efficient"
+
+            else:
+                status = "converting"
+
+            volume_score = (
+                conversions
+                / max_conversions
+                * 100
+                if max_conversions > 0
+                else 0
+            )
+
+            efficiency_score = (
+                min(
+                    100,
+                    median_cpa
+                    / cpa
+                    * 100
+                )
+                if (
+                    median_cpa > 0
+                    and cpa > 0
+                )
+                else 50
+            )
+
+            score = round(
+                volume_score
+                * 0.70
+                + efficiency_score
+                * 0.30
+            )
+
+        else:
+            status = (
+                "no_conversions"
+                if clicks >= 20
+                else "needs_data"
+            )
+
+            score = 0
+
+        item[
+            "rank"
+        ] = index
+
+        item[
+            "status"
+        ] = status
+
+        item[
+            "score"
+        ] = int(
+            clamp(
+                score,
+                0,
+                100
+            )
+        )
+
+    total_conversions = sum(
+        item[
+            "conversions"
+        ]
+        for item in result
+    )
+
+    for item in result:
+        item[
+            "conversion_share"
+        ] = round(
+            (
+                item[
+                    "conversions"
+                ]
+                / total_conversions
+                * 100
+            )
+            if total_conversions > 0
+            else 0,
+            2,
+        )
+
+        item[
+            "median_cpa"
+        ] = round(
+            median_cpa,
+            2
+        )
 
     print(
         "Keywords:",
@@ -2483,7 +2935,133 @@ def get_keyword_rows():
         flush=True,
     )
 
+    print(
+        "Keywords with conversions:",
+        len(
+            converting
+        ),
+        flush=True,
+    )
+
+    print(
+        "Keyword conversions:",
+        round(
+            total_conversions,
+            2
+        ),
+        flush=True,
+    )
+
     return result
+
+
+def summarize_keywords(
+    keywords
+):
+    total_cost = sum(
+        item.get(
+            "cost",
+            0
+        )
+        for item in keywords
+    )
+
+    total_clicks = sum(
+        item.get(
+            "clicks",
+            0
+        )
+        for item in keywords
+    )
+
+    total_conversions = sum(
+        item.get(
+            "conversions",
+            0
+        )
+        for item in keywords
+    )
+
+    with_conversions = sum(
+        1
+        for item in keywords
+        if item.get(
+            "conversions",
+            0
+        ) > 0
+    )
+
+    avg_cpa = (
+        total_cost
+        / total_conversions
+        if total_conversions > 0
+        else 0
+    )
+
+    conversion_rate = (
+        total_conversions
+        / total_clicks
+        * 100
+        if total_clicks > 0
+        else 0
+    )
+
+    top_keyword = (
+        keywords[0]
+        if keywords
+        and keywords[0].get(
+            "conversions",
+            0
+        ) > 0
+        else None
+    )
+
+    return {
+        "total_keywords": len(
+            keywords
+        ),
+
+        "with_conversions": (
+            with_conversions
+        ),
+
+        "total_conversions": round(
+            total_conversions,
+            2
+        ),
+
+        "total_cost": round(
+            total_cost,
+            2
+        ),
+
+        "avg_cpa": round(
+            avg_cpa,
+            2
+        ),
+
+        "conversion_rate": round(
+            conversion_rate,
+            3
+        ),
+
+        "top_keyword": (
+            top_keyword.get(
+                "keyword"
+            )
+            if top_keyword
+            else None
+        ),
+
+        "top_keyword_conversions": (
+            top_keyword.get(
+                "conversions",
+                0
+            )
+            if top_keyword
+            else 0
+        ),
+    }
 
 
 # ============================================================
@@ -2512,21 +3090,35 @@ def aggregate_campaigns(rows):
                 "impressions": 0,
                 "clicks": 0,
                 "spend": 0.0,
+                "conversions": 0.0,
             }
 
         item = campaigns[cid]
 
         item[
             "impressions"
-        ] += row["impressions"]
+        ] += row[
+            "impressions"
+        ]
 
         item[
             "clicks"
-        ] += row["clicks"]
+        ] += row[
+            "clicks"
+        ]
 
         item[
             "spend"
-        ] += row["cost"]
+        ] += row[
+            "cost"
+        ]
+
+        item[
+            "conversions"
+        ] += row.get(
+            "conversions",
+            0
+        )
 
     result = []
 
@@ -2543,6 +3135,10 @@ def aggregate_campaigns(rows):
             "spend"
         ]
 
+        conversions = item[
+            "conversions"
+        ]
+
         ctr = (
             clicks
             / impressions
@@ -2552,8 +3148,24 @@ def aggregate_campaigns(rows):
         )
 
         cpc = (
-            spend / clicks
+            spend
+            / clicks
             if clicks > 0
+            else 0
+        )
+
+        conversion_rate = (
+            conversions
+            / clicks
+            * 100
+            if clicks > 0
+            else 0
+        )
+
+        cpa = (
+            spend
+            / conversions
+            if conversions > 0
             else 0
         )
 
@@ -2562,6 +3174,11 @@ def aggregate_campaigns(rows):
 
             "spend": round(
                 spend,
+                2
+            ),
+
+            "conversions": round(
+                conversions,
                 2
             ),
 
@@ -2574,10 +3191,20 @@ def aggregate_campaigns(rows):
                 cpc,
                 2
             ),
+
+            "conversion_rate": round(
+                conversion_rate,
+                3
+            ),
+
+            "cpa": round(
+                cpa,
+                2
+            ),
         })
 
     result.sort(
-        key=lambda x: x[
+        key=lambda item: item[
             "spend"
         ],
         reverse=True,
@@ -2594,17 +3221,31 @@ def calculate_summary(
     campaigns
 ):
     impressions = sum(
-        c["impressions"]
+        c[
+            "impressions"
+        ]
         for c in campaigns
     )
 
     clicks = sum(
-        c["clicks"]
+        c[
+            "clicks"
+        ]
         for c in campaigns
     )
 
     spend = sum(
-        c["spend"]
+        c[
+            "spend"
+        ]
+        for c in campaigns
+    )
+
+    conversions = sum(
+        c.get(
+            "conversions",
+            0
+        )
         for c in campaigns
     )
 
@@ -2617,8 +3258,24 @@ def calculate_summary(
     )
 
     avg_cpc = (
-        spend / clicks
+        spend
+        / clicks
         if clicks > 0
+        else 0
+    )
+
+    conversion_rate = (
+        conversions
+        / clicks
+        * 100
+        if clicks > 0
+        else 0
+    )
+
+    cpa = (
+        spend
+        / conversions
+        if conversions > 0
         else 0
     )
 
@@ -2628,9 +3285,16 @@ def calculate_summary(
             2
         ),
 
-        "impressions": impressions,
+        "impressions": (
+            impressions
+        ),
 
         "clicks": clicks,
+
+        "conversions": round(
+            conversions,
+            2
+        ),
 
         "ctr": round(
             ctr,
@@ -2640,6 +3304,20 @@ def calculate_summary(
         "avg_cpc": round(
             avg_cpc,
             2
+        ),
+
+        "conversion_rate": round(
+            conversion_rate,
+            3
+        ),
+
+        "cpa": round(
+            cpa,
+            2
+        ),
+
+        "campaigns": len(
+            campaigns
         ),
     }
 
@@ -2727,7 +3405,7 @@ def build_report():
     )
 
     print(
-        "MARKETING RADAR CREATIVE v5",
+        "MARKETING RADAR v6",
         flush=True,
     )
 
@@ -2755,6 +3433,10 @@ def build_report():
     )
 
     keyword_rows = get_keyword_rows()
+
+    keyword_summary = summarize_keywords(
+        keyword_rows
+    )
 
     # --------------------------------------------------------
     # 2
@@ -2981,6 +3663,12 @@ def build_report():
                 "visual_asset_proxy_v5"
             ),
 
+            "report_version": 6,
+
+            "keyword_method": (
+                "CRITERIA_PERFORMANCE_REPORT_KEYWORD"
+            ),
+
             "score_model": (
                 "CTR_60_CPC_40"
             ),
@@ -3011,6 +3699,10 @@ def build_report():
         "daily": campaign_rows,
 
         "keywords": keyword_rows,
+
+        "keyword_summary": (
+            keyword_summary
+        ),
     }
 
 
@@ -3057,7 +3749,7 @@ def encrypt_report(report):
     )
 
     return {
-        "version": 5,
+        "version": 6,
 
         "kdf": (
             "PBKDF2-SHA256"
