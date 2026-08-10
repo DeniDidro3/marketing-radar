@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#07111f" />
+  <title>Marketing Radar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">MR</div>
+        <div>
+          <strong>Marketing Radar</strong>
+          <span>Performance Control</span>
+        </div>
+      </div>
+
+      <nav>
+        <button class="nav active" data-section="overview">Обзор</button>
+        <button class="nav" data-section="alerts">Аномалии <span id="navAlertCount" class="badge">0</span></button>
+        <button class="nav" data-section="budget">Бюджет</button>
+        <button class="nav" data-section="creatives">Креативы</button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <div class="sync-box">
+          <span class="status-dot"></span>
+          <div>
+            <small>Последнее обновление</small>
+            <strong id="sidebarUpdated">—</strong>
+          </div>
+        </div>
+        <div class="caption">Данные обновляются автоматически каждый день</div>
+      </div>
+    </aside>
+
+    <main>
+      <header>
+        <div>
+          <div class="eyebrow">PERFORMANCE INTELLIGENCE</div>
+          <h1 id="pageTitle">Обзор рекламы</h1>
+          <p id="pageSubtitle">Что требует внимания и где есть потенциал роста.</p>
+        </div>
+        <div class="header-actions">
+          <select id="periodSelect" aria-label="Период">
+            <option value="7">7 дней</option>
+            <option value="30" selected>30 дней</option>
+          </select>
+          <button id="refreshBtn" class="ghost">Обновить экран</button>
+        </div>
+      </header>
+
+      <section id="overview" class="section active">
+        <div class="hero">
+          <div>
+            <span class="hero-label">Состояние рекламы</span>
+            <h2 id="heroHeadline">Загрузка данных…</h2>
+            <p id="heroCopy">Проверяем кампании, расход, CPA и динамику креативов.</p>
+          </div>
+          <div class="health">
+            <div class="health-ring"><span id="healthScore">—</span></div>
+            <small>Health score</small>
+          </div>
+        </div>
+
+        <div id="kpis" class="kpi-grid"></div>
+
+        <div class="section-head">
+          <div>
+            <h3>Что требует внимания сегодня</h3>
+            <p>Приоритеты рассчитываются автоматически по заданным правилам.</p>
+          </div>
+          <button class="text-btn" data-goto="alerts">Все аномалии →</button>
+        </div>
+        <div id="priorityAlerts" class="alerts-grid"></div>
+
+        <div class="split">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Эффективность кампаний</h3>
+                <p>Score 0–100 с учётом CPA, CR и динамики.</p>
+              </div>
+            </div>
+            <div id="campaignTable"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Рекомендация по бюджету</h3>
+                <p>Без автоматического изменения ставок.</p>
+              </div>
+            </div>
+            <div id="budgetPreview"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="alerts" class="section">
+        <div class="section-head top">
+          <div>
+            <h2>Аномалии</h2>
+            <p>События, которые вышли за заданные пороги.</p>
+          </div>
+          <div id="alertFilters" class="segmented">
+            <button class="active" data-filter="all">Все</button>
+            <button data-filter="critical">Критические</button>
+            <button data-filter="warning">Внимание</button>
+            <button data-filter="opportunity">Возможности</button>
+          </div>
+        </div>
+        <div id="allAlerts" class="alerts-list"></div>
+      </section>
+
+      <section id="budget" class="section">
+        <div class="section-head top">
+          <div>
+            <h2>Budget Optimizer</h2>
+            <p>Рекомендованное перераспределение бюджета на основе текущей эффективности.</p>
+          </div>
+        </div>
+        <div class="panel">
+          <div id="budgetTable"></div>
+        </div>
+        <div class="note">
+          <strong>Важно:</strong> MVP ничего не меняет в рекламном кабинете. Он только показывает рекомендации для ручной проверки.
+        </div>
+      </section>
+
+      <section id="creatives" class="section">
+        <div class="section-head top">
+          <div>
+            <h2>Creative Fatigue</h2>
+            <p>Поиск объявлений, у которых CTR падает, а CPA растёт.</p>
+          </div>
+        </div>
+        <div id="creativeGrid" class="creative-grid"></div>
+      </section>
+
+      <footer>
+        <span>Marketing Radar MVP</span>
+        <span id="footerUpdated">—</span>
+      </footer>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
