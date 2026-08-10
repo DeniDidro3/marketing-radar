@@ -1,87 +1,429 @@
-"""
-Marketing Radar — data builder.
-
-Сейчас generate_demo_data() создаёт демонстрационные данные.
-Когда подключите Яндекс Директ / Метрику, замените функцию fetch_source_data()
-и передавайте реальные агрегаты в build_report().
-"""
-from __future__ import annotations
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+import os
 import json
-import random
+import csv
+import io
+import time
+import base64
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+DIRECT_REPORT_URL = "https://api.direct.yandex.com/json/v501/reports"
+
+TOKEN = os.environ["YANDEX_DIRECT_TOKEN"]
+REPORT_PASSWORD = os.environ["REPORT_PASSWORD"]
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "data" / "report.json"
+OUT = ROOT / "data" / "report.enc"
 
-def fetch_source_data():
-    # TODO:
-    # 1. Прочитать токены из ENV / GitHub Secrets, а НЕ из репозитория.
-    # 2. Получить данные Direct API.
-    # 3. Получить конверсии из Metrika API.
-    # 4. Вернуть нормализованные дневные данные.
-    return None
 
-def generate_demo_data():
-    rnd = random.Random(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-    campaigns = [
-        {"name":"PPEM","spend":64200,"cpa":3567,"cr":4.6,"score":92},
-        {"name":"AXE White Paper","spend":85300,"cpa":4265,"cr":3.8,"score":84},
-        {"name":"Enterprise","spend":121400,"cpa":7825,"cr":2.1,"score":61},
-        {"name":"Enterprise 1C","spend":96700,"cpa":8640,"cr":1.9,"score":53},
-        {"name":"Gate","spend":47200,"cpa":11200,"cr":1.4,"score":38},
-    ]
-    alerts = [
-        {"severity":"critical","title":"6 площадок РСЯ расходуют бюджет без конверсий","description":"За 30 дней площадки получили 214 кликов и не дали ни одной целевой конверсии.","impact":"−18 420 ₽ потенциал","entity":"Enterprise / РСЯ"},
-        {"severity":"critical","title":"CPA Enterprise 1C выше нормы","description":"CPA на 36% выше собственного среднего за предыдущие 30 дней при сопоставимом объёме трафика.","impact":"CPA +36%","entity":"Enterprise 1C"},
-        {"severity":"warning","title":"Creative AXE-04 показывает признаки выгорания","description":"CTR снижается 9 дней подряд, одновременно CPA вырос относительно первых 7 дней размещения.","impact":"CTR −38%","entity":"AXE / Creative 04"},
-        {"severity":"warning","title":"CPC Gate растёт быстрее рынка кампании","description":"Средний CPC вырос на 24%, а конверсия страницы не улучшилась.","impact":"CPC +24%","entity":"Gate"},
-        {"severity":"opportunity","title":"PPEM сохраняет низкий CPA при росте объёма","description":"Кампания масштабируется без заметного ухудшения стоимости конверсии.","impact":"+15 000 ₽ бюджет","entity":"PPEM"},
-        {"severity":"opportunity","title":"AXE стабильно эффективнее среднего","description":"CPA ниже медианы активных кампаний, CR остаётся стабильным последние две недели.","impact":"+10 000 ₽ бюджет","entity":"AXE"},
-    ]
-    creatives = [
-        {"name":"AXE-04","fatigue_score":82,"ctr_change":-38,"cpa_change":41,"recommendation":"Подготовить замену: оба ключевых показателя ухудшаются."},
-        {"name":"Enterprise-07","fatigue_score":57,"ctr_change":-22,"cpa_change":18,"recommendation":"Оставить в ротации, но проверить ещё через несколько дней."},
-        {"name":"PPEM-03","fatigue_score":21,"ctr_change":7,"cpa_change":-9,"recommendation":"Креатив стабилен, признаков выгорания нет."},
-        {"name":"Gate-02","fatigue_score":68,"ctr_change":-29,"cpa_change":31,"recommendation":"Снизить долю показов и протестировать новую концепцию."},
-        {"name":"1C-05","fatigue_score":35,"ctr_change":-8,"cpa_change":5,"recommendation":"Небольшое ухудшение в пределах рабочего диапазона."},
-        {"name":"AXE-06","fatigue_score":18,"ctr_change":12,"cpa_change":-11,"recommendation":"Один из наиболее устойчивых активных креативов."},
-    ]
-    return {
-        "meta":{
-            "updated_at": (datetime.now(timezone.utc)+timedelta(hours=3)).strftime("%d.%m.%Y %H:%M"),
-            "period_days":30,
-            "source":"demo"
-        },
-        "summary":{
-            "spend":414800,
-            "spend_change":6.4,
-            "conversions":71,
-            "conversions_change":11.2,
-            "cpa":5842,
-            "cpa_change":-4.3,
-            "ctr":2.84,
-            "ctr_change":3.7,
-            "health_score":74
-        },
-        "alerts":alerts,
-        "campaigns":campaigns,
-        "budget_recommendations":[
-            {"name":"PPEM","current":64200,"recommended":79200,"change":15000,"reason":"Высокий score и стабильный CPA"},
-            {"name":"AXE White Paper","current":85300,"recommended":95300,"change":10000,"reason":"CPA ниже медианы кампаний"},
-            {"name":"Enterprise","current":121400,"recommended":116400,"change":-5000,"reason":"Слабая динамика CPA"},
-            {"name":"Enterprise 1C","current":96700,"recommended":86700,"change":-10000,"reason":"CPA выше собственной нормы"},
-            {"name":"Gate","current":47200,"recommended":37200,"change":-10000,"reason":"Низкий CR и высокий CPA"},
-        ],
-        "creatives":creatives
+def safe_float(value, default=0.0):
+    if value is None:
+        return default
+
+    value = str(value).strip()
+
+    if value in ("", "-", "--", "null", "None"):
+        return default
+
+    value = value.replace(",", ".")
+
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_int(value, default=0):
+    if value is None:
+        return default
+
+    value = str(value).strip()
+
+    if value in ("", "-", "--", "null", "None"):
+        return default
+
+    try:
+        return int(float(value))
+    except (ValueError, TypeError):
+        return default
+
+
+def request_campaign_report():
+    today = datetime.now(timezone.utc).date()
+
+    date_from = today - timedelta(days=60)
+    date_to = today - timedelta(days=1)
+
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Accept-Language": "ru",
+        "processingMode": "auto",
+        "returnMoneyInMicros": "false",
+        "skipReportHeader": "true",
+        "skipColumnHeader": "true",
+        "skipReportSummary": "true",
     }
 
+    fields = [
+        "Date",
+        "CampaignId",
+        "CampaignName",
+        "Impressions",
+        "Clicks",
+        "Cost",
+        "Ctr",
+        "AvgCpc",
+    ]
+
+    body = {
+        "params": {
+            "SelectionCriteria": {
+                "DateFrom": date_from.isoformat(),
+                "DateTo": date_to.isoformat(),
+            },
+            "FieldNames": fields,
+            "OrderBy": [
+                {
+                    "Field": "Date",
+                    "SortOrder": "ASCENDING",
+                }
+            ],
+            "ReportName": "Marketing Radar Campaign Report",
+            "ReportType": "CAMPAIGN_PERFORMANCE_REPORT",
+            "DateRangeType": "CUSTOM_DATE",
+            "Format": "TSV",
+            "IncludeVAT": "YES",
+            "IncludeDiscount": "YES",
+        }
+    }
+
+    max_attempts = 20
+
+    for attempt in range(1, max_attempts + 1):
+        print(
+            f"[{attempt}/{max_attempts}] "
+            f"Requesting Direct report "
+            f"{date_from} — {date_to}...",
+            flush=True,
+        )
+
+        response = requests.post(
+            DIRECT_REPORT_URL,
+            headers=headers,
+            json=body,
+            timeout=120,
+        )
+
+        print(
+            f"HTTP {response.status_code}",
+            flush=True,
+        )
+
+        if response.status_code == 200:
+            print(
+                "Report received successfully.",
+                flush=True,
+            )
+            return response.text, fields
+
+        if response.status_code in (201, 202):
+            retry_in = int(
+                response.headers.get("retryIn", "10")
+            )
+
+            time.sleep(retry_in)
+            continue
+
+        print(
+            response.text,
+            flush=True,
+        )
+
+        raise RuntimeError(
+            f"Direct API returned HTTP "
+            f"{response.status_code}"
+        )
+
+    raise RuntimeError(
+        "Report was not ready after "
+        f"{max_attempts} attempts."
+    )
+
+
+def parse_tsv(text, fields):
+    reader = csv.reader(
+        io.StringIO(text),
+        delimiter="\t",
+    )
+
+    rows = []
+
+    for values in reader:
+        if not values:
+            continue
+
+        if len(values) < len(fields):
+            continue
+
+        row = dict(zip(fields, values))
+
+        rows.append(
+            {
+                "date": row.get("Date", ""),
+                "campaign_id": row.get(
+                    "CampaignId",
+                    "",
+                ),
+                "campaign_name": row.get(
+                    "CampaignName",
+                    "",
+                ),
+                "impressions": safe_int(
+                    row.get("Impressions")
+                ),
+                "clicks": safe_int(
+                    row.get("Clicks")
+                ),
+                "cost": safe_float(
+                    row.get("Cost")
+                ),
+                "ctr": safe_float(
+                    row.get("Ctr")
+                ),
+                "avg_cpc": safe_float(
+                    row.get("AvgCpc")
+                ),
+            }
+        )
+
+    return rows
+
+
+def aggregate_campaigns(rows):
+    campaigns = {}
+
+    for row in rows:
+        cid = row["campaign_id"]
+
+        if not cid:
+            continue
+
+        if cid not in campaigns:
+            campaigns[cid] = {
+                "campaign_id": cid,
+                "name": row["campaign_name"],
+                "impressions": 0,
+                "clicks": 0,
+                "spend": 0.0,
+            }
+
+        campaigns[cid]["impressions"] += (
+            row["impressions"]
+        )
+
+        campaigns[cid]["clicks"] += (
+            row["clicks"]
+        )
+
+        campaigns[cid]["spend"] += (
+            row["cost"]
+        )
+
+    result = []
+
+    for campaign in campaigns.values():
+        impressions = campaign["impressions"]
+        clicks = campaign["clicks"]
+        spend = campaign["spend"]
+
+        ctr = (
+            clicks / impressions * 100
+            if impressions > 0
+            else 0
+        )
+
+        avg_cpc = (
+            spend / clicks
+            if clicks > 0
+            else 0
+        )
+
+        result.append(
+            {
+                **campaign,
+                "spend": round(spend, 2),
+                "ctr": round(ctr, 2),
+                "avg_cpc": round(avg_cpc, 2),
+            }
+        )
+
+    result.sort(
+        key=lambda x: x["spend"],
+        reverse=True,
+    )
+
+    return result
+
+
+def calculate_summary(campaigns):
+    total_impressions = sum(
+        c["impressions"]
+        for c in campaigns
+    )
+
+    total_clicks = sum(
+        c["clicks"]
+        for c in campaigns
+    )
+
+    total_spend = sum(
+        c["spend"]
+        for c in campaigns
+    )
+
+    ctr = (
+        total_clicks
+        / total_impressions
+        * 100
+        if total_impressions > 0
+        else 0
+    )
+
+    avg_cpc = (
+        total_spend
+        / total_clicks
+        if total_clicks > 0
+        else 0
+    )
+
+    return {
+        "spend": round(total_spend, 2),
+        "impressions": total_impressions,
+        "clicks": total_clicks,
+        "ctr": round(ctr, 2),
+        "avg_cpc": round(avg_cpc, 2),
+    }
+
+
+def build_report():
+    print(
+        "Requesting Yandex Direct campaign report...",
+        flush=True,
+    )
+
+    tsv, fields = request_campaign_report()
+
+    rows = parse_tsv(
+        tsv,
+        fields,
+    )
+
+    campaigns = aggregate_campaigns(
+        rows
+    )
+
+    summary = calculate_summary(
+        campaigns
+    )
+
+    return {
+        "meta": {
+            "updated_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "source": "yandex_direct",
+            "period_days": 60,
+        },
+        "summary": summary,
+        "campaigns": campaigns,
+        "daily": rows,
+    }
+
+
+def derive_key(password, salt):
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        250000,
+        dklen=32,
+    )
+
+
+def encrypt_report(report):
+    plaintext = json.dumps(
+        report,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    salt = secrets.token_bytes(16)
+    nonce = secrets.token_bytes(12)
+
+    key = derive_key(
+        REPORT_PASSWORD,
+        salt,
+    )
+
+    aesgcm = AESGCM(key)
+
+    ciphertext = aesgcm.encrypt(
+        nonce,
+        plaintext,
+        None,
+    )
+
+    encrypted_payload = {
+        "version": 1,
+        "kdf": "PBKDF2-SHA256",
+        "iterations": 250000,
+        "cipher": "AES-256-GCM",
+        "salt": base64.b64encode(
+            salt
+        ).decode("ascii"),
+        "nonce": base64.b64encode(
+            nonce
+        ).decode("ascii"),
+        "ciphertext": base64.b64encode(
+            ciphertext
+        ).decode("ascii"),
+    }
+
+    return encrypted_payload
+
+
 def main():
-    # source = fetch_source_data()
-    report = generate_demo_data()
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"Wrote {OUT}")
+    report = build_report()
+
+    encrypted = encrypt_report(
+        report
+    )
+
+    OUT.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    OUT.write_text(
+        json.dumps(
+            encrypted,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+    print(
+        f"Encrypted report saved: {OUT}",
+        flush=True,
+    )
+
 
 if __name__ == "__main__":
     main()
