@@ -412,6 +412,8 @@ function render() {
   renderCreativeSummary();
 
   renderCreatives();
+
+  renderKeywords();
 }
 
 
@@ -1349,6 +1351,126 @@ function creativeCard(
 
 
 /* =========================================================
+   KEYWORDS
+========================================================= */
+
+function renderKeywords() {
+
+  const container =
+    document.getElementById(
+      "keywordsTable"
+    );
+
+  if (!container) {
+    return;
+  }
+
+  const keywords =
+    [...(DATA.keywords || [])];
+
+
+  if (!keywords.length) {
+
+    container.innerHTML = `
+      <div class="note">
+        Данные по ключевым фразам
+        пока не получены.
+      </div>
+    `;
+
+    return;
+  }
+
+
+  keywords.sort(
+    (a, b) =>
+      (b.conversions || 0)
+      -
+      (a.conversions || 0)
+  );
+
+
+  container.innerHTML = `
+
+    <table class="table">
+
+      <thead>
+        <tr>
+          <th>Ключевая фраза</th>
+          <th>Конверсии</th>
+          <th>CPA</th>
+          <th>Клики</th>
+          <th>CTR</th>
+          <th>Статус</th>
+        </tr>
+      </thead>
+
+      <tbody>
+
+        ${
+          keywords.map(
+            keyword => `
+
+            <tr>
+
+              <td>
+                ${escapeHtml(
+                  keyword.keyword
+                )}
+              </td>
+
+              <td>
+                ${number(
+                  keyword.conversions
+                )}
+              </td>
+
+              <td>
+                ${
+                  keyword.cpa
+                    ? money(keyword.cpa)
+                    : "—"
+                }
+              </td>
+
+              <td>
+                ${number(
+                  keyword.clicks
+                )}
+              </td>
+
+              <td>
+                ${pct(
+                  keyword.ctr
+                )}
+              </td>
+
+              <td>
+                ${
+                  keyword.status === "winner"
+                    ? "🟢 Эффективная"
+                    :
+                  keyword.status === "weak"
+                    ? "🔴 Слабая"
+                    :
+                  "🟡 Мало данных"
+                }
+              </td>
+
+            </tr>
+
+            `
+          ).join("")
+        }
+
+      </tbody>
+
+    </table>
+  `;
+}
+
+
+/* =========================================================
    UI HELPERS
 ========================================================= */
 
@@ -1739,6 +1861,11 @@ function showSection(
         "Какие именно визуалы "
         + "работают лучше остальных."
       ),
+    ],
+
+    keywords: [
+      "Ключевые фразы",
+      "Какие запросы приводят больше всего конверсий."
     ],
   };
 
