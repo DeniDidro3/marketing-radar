@@ -1,6 +1,15 @@
 let DATA = null;
 let ALERT_FILTER = "all";
 
+const AUDIENCE_FILTERS = {
+  age: new Set(),
+  gender: new Set(),
+  income_grade: new Set(),
+  device: new Set(),
+};
+
+let AUDIENCE_METRIC = "cost";
+
 const fmt = new Intl.NumberFormat("ru-RU");
 const money = v => `${fmt.format(Math.round(Number(v || 0)))} ₽`;
 const number = v => fmt.format(Math.round(Number(v || 0)));
@@ -102,6 +111,7 @@ function showLogin() {
         padding:24px;
       "
     >
+
       <div
         style="
           width:100%;
@@ -112,6 +122,7 @@ function showLogin() {
           background:#0e1c2e;
         "
       >
+
         <div
           style="
             font-size:11px;
@@ -177,7 +188,9 @@ function showLogin() {
         >
           Войти
         </button>
+
       </div>
+
     </div>
     `
   );
@@ -193,15 +206,18 @@ function showLogin() {
     );
 
   async function login() {
+
     if (!input.value) {
       return;
     }
 
     button.disabled = true;
+
     button.textContent =
       "Расшифровка...";
 
     try {
+
       DATA =
         await loadEncryptedReport(
           input.value
@@ -247,7 +263,9 @@ function showLogin() {
     "keydown",
     e => {
 
-      if (e.key === "Enter") {
+      if (
+        e.key === "Enter"
+      ) {
         login();
       }
     }
@@ -257,6 +275,7 @@ function showLogin() {
 }
 
 async function start() {
+
   const password =
     sessionStorage.getItem(
       "marketingRadarPassword"
@@ -297,17 +316,39 @@ const ADVANCED_SECTIONS = [
   ["audience", "Аудитория"],
   ["geo", "География"],
   ["positions", "Позиции поиска"],
-  ["attribution", "Атрибуция"],
-  ["goals", "Цели"],
-  ["media", "Медийка"],
-  ["retargeting", "Ретаргетинг"]
+];
+
+const REMOVED_SECTIONS = [
+  "attribution",
+  "goals",
+  "media",
+  "retargeting",
 ];
 
 function ensureAdvancedUI() {
+
   const nav =
     document.querySelector(
       ".sidebar nav"
     );
+
+  for (
+    const id
+    of REMOVED_SECTIONS
+  ) {
+
+    nav
+      ?.querySelector(
+        `[data-section="${id}"]`
+      )
+      ?.remove();
+
+    document
+      .getElementById(
+        id
+      )
+      ?.remove();
+  }
 
   if (nav) {
 
@@ -367,69 +408,49 @@ function ensureAdvancedUI() {
 
     keywords: [
       "Ключевые фразы",
-      "Какие рекламные ключи дают конверсии и сколько стоит результат.",
-      "keywordBody"
+      "Какие рекламные ключи дают Order, регистрации и прохождения опросов.",
+      "keywordBody",
     ],
 
     queries: [
       "Search Query Intelligence",
       "Что реально вводят пользователи: новые ключи, минус-слова и семантическое расширение.",
-      "queryBody"
+      "queryBody",
     ],
 
     placements: [
       "Placement Intelligence",
-      "Какие площадки РСЯ дают результат, а какие тратят бюджет без конверсий.",
-      "placementBody"
+      "Какие площадки РСЯ дают Order, регистрации и опросы, а какие тратят бюджет без результата.",
+      "placementBody",
     ],
 
     audience: [
       "Audience Intelligence",
-      "Возраст × пол × доход × устройство и кандидаты на корректировки.",
-      "audienceBody"
+      "Комбинируйте возраст, пол, платежеспособность и устройство. Ниже — фильтры и диаграммы.",
+      "audienceBody",
     ],
 
     geo: [
       "Geo Intelligence",
       "Где фактически находятся пользователи и как это соотносится с таргетингом.",
-      "geoBody"
+      "geoBody",
     ],
 
     positions: [
       "Search Position Economics",
-      "Экономика позиций в поиске: объём трафика, ставка, CPC и CPA.",
-      "positionBody"
+      "Экономика поисковых блоков: объём трафика, ставка, CPC и три типа конверсий.",
+      "positionBody",
     ],
-
-    attribution: [
-      "Attribution Lab",
-      "Насколько вывод о кампании зависит от модели атрибуции.",
-      "attributionBody"
-    ],
-
-    goals: [
-      "Goal Intelligence",
-      "Какие priority goals реально достигаются и какой вклад они дают.",
-      "goalBody"
-    ],
-
-    media: [
-      "Media Intelligence",
-      "Охват, частота и удержание видео для медийных кампаний.",
-      "mediaBody"
-    ],
-
-    retargeting: [
-      "Retargeting Health",
-      "Техническое здоровье условий ретаргетинга и доступность сегментов.",
-      "retargetingBody"
-    ]
   };
 
   for (
     const [
       id,
-      [title, copy, bodyId]
+      [
+        title,
+        copy,
+        bodyId
+      ]
     ]
     of Object.entries(
       definitions
@@ -498,6 +519,7 @@ function ensureAdvancedUI() {
 }
 
 function prepareStaticCopy() {
+
   const campaignTitle =
     document.querySelector(
       "#overview .split .panel:first-child .panel-head h3"
@@ -532,7 +554,7 @@ function prepareStaticCopy() {
   if (campaignCopy) {
 
     campaignCopy.textContent =
-      "Расход, показы, клики, CTR, CPC, конверсии и CPA.";
+      "Расход, клики, CTR, CPC и раздельные конверсии: Order / вебинары / опросы.";
   }
 
   if (budgetCopy) {
@@ -579,6 +601,7 @@ function prepareStaticCopy() {
 /* ============================== RENDER ============================== */
 
 function render() {
+
   if (!DATA) {
     return;
   }
@@ -608,17 +631,10 @@ function render() {
   renderGeo();
 
   renderPositions();
-
-  renderAttribution();
-
-  renderGoals();
-
-  renderMedia();
-
-  renderRetargeting();
 }
 
 function renderMeta() {
+
   const updated =
     formatDate(
       DATA.meta?.updated_at
@@ -647,9 +663,70 @@ function renderMeta() {
   }
 }
 
+/* ============================== CONVERSIONS ============================== */
+
+function conversionBreakdown(
+  x = {}
+) {
+
+  const order =
+    Number(
+      x.order_conversions
+      || 0
+    );
+
+  const webinar =
+    Number(
+      x.webinar_conversions
+      || 0
+    );
+
+  const survey =
+    Number(
+      x.survey_conversions
+      || 0
+    );
+
+  return {
+    order,
+    webinar,
+    survey,
+    total:
+      order
+      + webinar
+      + survey,
+  };
+}
+
+function cpa(
+  cost,
+  conversions
+) {
+
+  cost =
+    Number(
+      cost
+      || 0
+    );
+
+  conversions =
+    Number(
+      conversions
+      || 0
+    );
+
+  return (
+    conversions > 0
+  )
+    ? cost
+      / conversions
+    : 0;
+}
+
 /* ============================== PERIOD / OVERVIEW ============================== */
 
 function selectedDays() {
+
   return Math.max(
     1,
     Number(
@@ -663,7 +740,10 @@ function selectedDays() {
   );
 }
 
-function finalCampaign(c) {
+function finalCampaign(
+  c
+) {
+
   const impressions =
     Number(
       c.impressions
@@ -685,13 +765,31 @@ function finalCampaign(c) {
       0
     );
 
-  const conversions =
+  const order_conversions =
     Number(
-      c.conversions
+      c.order_conversions
       || 0
     );
 
+  const webinar_conversions =
+    Number(
+      c.webinar_conversions
+      || 0
+    );
+
+  const survey_conversions =
+    Number(
+      c.survey_conversions
+      || 0
+    );
+
+  const conversions =
+    order_conversions
+    + webinar_conversions
+    + survey_conversions;
+
   return {
+
     ...c,
 
     impressions,
@@ -699,6 +797,12 @@ function finalCampaign(c) {
     clicks,
 
     spend,
+
+    order_conversions,
+
+    webinar_conversions,
+
+    survey_conversions,
 
     conversions,
 
@@ -715,18 +819,44 @@ function finalCampaign(c) {
           / clicks
         : 0,
 
-    cr:
+    order_cr:
       clicks
-        ? conversions
+        ? order_conversions
           / clicks
           * 100
         : 0,
 
-    cpa:
-      conversions
-        ? spend
-          / conversions
-        : 0
+    webinar_cr:
+      clicks
+        ? webinar_conversions
+          / clicks
+          * 100
+        : 0,
+
+    survey_cr:
+      clicks
+        ? survey_conversions
+          / clicks
+          * 100
+        : 0,
+
+    order_cpa:
+      cpa(
+        spend,
+        order_conversions
+      ),
+
+    webinar_cpa:
+      cpa(
+        spend,
+        webinar_conversions
+      ),
+
+    survey_cpa:
+      cpa(
+        spend,
+        survey_conversions
+      ),
   };
 }
 
@@ -759,9 +889,21 @@ function summarizeCampaigns(
             || 0
           );
 
-        a.conversions +=
+        a.order_conversions +=
           Number(
-            c.conversions
+            c.order_conversions
+            || 0
+          );
+
+        a.webinar_conversions +=
+          Number(
+            c.webinar_conversions
+            || 0
+          );
+
+        a.survey_conversions +=
+          Number(
+            c.survey_conversions
             || 0
           );
 
@@ -771,9 +913,16 @@ function summarizeCampaigns(
         impressions: 0,
         clicks: 0,
         spend: 0,
-        conversions: 0
+        order_conversions: 0,
+        webinar_conversions: 0,
+        survey_conversions: 0,
       }
     );
+
+  s.conversions =
+    s.order_conversions
+    + s.webinar_conversions
+    + s.survey_conversions;
 
   s.ctr =
     s.impressions
@@ -788,23 +937,29 @@ function summarizeCampaigns(
         / s.clicks
       : 0;
 
-  s.cr =
-    s.clicks
-      ? s.conversions
-        / s.clicks
-        * 100
-      : 0;
+  s.order_cpa =
+    cpa(
+      s.spend,
+      s.order_conversions
+    );
 
-  s.cpa =
-    s.conversions
-      ? s.spend
-        / s.conversions
-      : 0;
+  s.webinar_cpa =
+    cpa(
+      s.spend,
+      s.webinar_conversions
+    );
+
+  s.survey_cpa =
+    cpa(
+      s.spend,
+      s.survey_conversions
+    );
 
   return s;
 }
 
 function overviewSnapshot() {
+
   const days =
     selectedDays();
 
@@ -815,7 +970,9 @@ function overviewSnapshot() {
       ? DATA.daily
       : [];
 
-  if (!rows.length) {
+  if (
+    !rows.length
+  ) {
 
     const campaigns =
       (
@@ -841,7 +998,7 @@ function overviewSnapshot() {
       summary:
         summarizeCampaigns(
           campaigns
-        )
+        ),
     };
   }
 
@@ -856,7 +1013,9 @@ function overviewSnapshot() {
       )
       .sort();
 
-  if (!dates.length) {
+  if (
+    !dates.length
+  ) {
 
     const campaigns =
       (
@@ -882,13 +1041,15 @@ function overviewSnapshot() {
       summary:
         summarizeCampaigns(
           campaigns
-        )
+        ),
     };
   }
 
   const latest =
     new Date(
-      `${dates.at(-1)}T00:00:00Z`
+      `${
+        dates.at(-1)
+      }T00:00:00Z`
     );
 
   const start =
@@ -912,7 +1073,9 @@ function overviewSnapshot() {
     of rows
   ) {
 
-    if (!row.date) {
+    if (
+      !row.date
+    ) {
       continue;
     }
 
@@ -935,7 +1098,9 @@ function overviewSnapshot() {
         || ""
       );
 
-    if (!id) {
+    if (
+      !id
+    ) {
       continue;
     }
 
@@ -965,8 +1130,14 @@ function overviewSnapshot() {
           spend:
             0,
 
-          conversions:
-            0
+          order_conversions:
+            0,
+
+          webinar_conversions:
+            0,
+
+          survey_conversions:
+            0,
         }
       );
     }
@@ -994,9 +1165,21 @@ function overviewSnapshot() {
         || 0
       );
 
-    item.conversions +=
+    item.order_conversions +=
       Number(
-        row.conversions
+        row.order_conversions
+        || 0
+      );
+
+    item.webinar_conversions +=
+      Number(
+        row.webinar_conversions
+        || 0
+      );
+
+    item.survey_conversions +=
+      Number(
+        row.survey_conversions
         || 0
       );
   }
@@ -1019,16 +1202,20 @@ function overviewSnapshot() {
       );
 
   return {
+
     days,
+
     campaigns,
+
     summary:
       summarizeCampaigns(
         campaigns
-      )
+      ),
   };
 }
 
 function renderOverview() {
+
   const snap =
     overviewSnapshot();
 
@@ -1050,41 +1237,59 @@ function renderOverview() {
       "healthScore"
     );
 
-  if (heroHeadline) {
+  if (
+    heroHeadline
+  ) {
 
     heroHeadline.textContent =
       "Marketing Radar работает";
   }
 
-  if (heroCopy) {
+  if (
+    heroCopy
+  ) {
 
     heroCopy.textContent =
       `${
         number(
           snap.campaigns.length
         )
-      } кампаний · ${
+      } кампаний · `
+      +
+      `${
         money(
           s.spend
         )
-      } расходов · ${
+      } расходов · `
+      +
+      `${
         number(
           s.clicks
         )
-      } кликов`
+      } кликов · `
       +
-      (
-        s.conversions
-          ? ` · ${
-              decimal(
-                s.conversions
-              )
-            } конверсий`
-          : ""
-      );
+      `Order ${
+        decimal(
+          s.order_conversions
+        )
+      } · `
+      +
+      `Вебинары ${
+        decimal(
+          s.webinar_conversions
+        )
+      } · `
+      +
+      `Опросы ${
+        decimal(
+          s.survey_conversions
+        )
+      }`;
   }
 
-  if (health) {
+  if (
+    health
+  ) {
 
     health.textContent =
       "LIVE";
@@ -1095,33 +1300,39 @@ function renderOverview() {
       "kpis"
     );
 
-  if (kpis) {
+  if (
+    kpis
+  ) {
 
     const items = [
+
       [
         "Расход",
         money(
           s.spend
-        )
+        ),
       ],
+
       [
         "Показы",
         number(
           s.impressions
-        )
+        ),
       ],
+
       [
         "Клики",
         number(
           s.clicks
-        )
+        ),
       ],
+
       [
         "CTR",
         pct(
           s.ctr
-        )
-      ]
+        ),
+      ],
     ];
 
     kpis.innerHTML =
@@ -1185,7 +1396,9 @@ function renderCampaignTable(
       "campaignTable"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -1205,14 +1418,45 @@ function renderCampaignTable(
 
           <tr>
 
-            <th>Кампания</th>
-            <th>Расход</th>
-            <th>Показы</th>
-            <th>Клики</th>
-            <th>CTR</th>
-            <th>CPC</th>
-            <th>Конверсии</th>
-            <th>CPA</th>
+            <th>
+              Кампания
+            </th>
+
+            <th>
+              Расход
+            </th>
+
+            <th>
+              Клики
+            </th>
+
+            <th>
+              CTR
+            </th>
+
+            <th>
+              CPC
+            </th>
+
+            <th>
+              Order
+            </th>
+
+            <th>
+              CPA Order
+            </th>
+
+            <th>
+              Вебинар
+            </th>
+
+            <th>
+              Опрос
+            </th>
+
+            <th>
+              CPA опрос
+            </th>
 
           </tr>
 
@@ -1229,15 +1473,13 @@ function renderCampaignTable(
                   <tr>
 
                     <td>
-                      ${esc(c.name)}
+                      <strong>
+                        ${esc(c.name)}
+                      </strong>
                     </td>
 
                     <td>
                       ${money(c.spend)}
-                    </td>
-
-                    <td>
-                      ${number(c.impressions)}
                     </td>
 
                     <td>
@@ -1259,14 +1501,32 @@ function renderCampaignTable(
                     </td>
 
                     <td>
-                      ${decimal(c.conversions)}
+                      ${decimal(c.order_conversions)}
                     </td>
 
                     <td>
                       ${
-                        c.cpa
+                        c.order_cpa
                           ? money(
-                              c.cpa
+                              c.order_cpa
+                            )
+                          : "—"
+                      }
+                    </td>
+
+                    <td>
+                      ${decimal(c.webinar_conversions)}
+                    </td>
+
+                    <td>
+                      ${decimal(c.survey_conversions)}
+                    </td>
+
+                    <td>
+                      ${
+                        c.survey_cpa
+                          ? money(
+                              c.survey_cpa
                             )
                           : "—"
                       }
@@ -1297,35 +1557,17 @@ function renderOverviewSummary(
       "budgetPreview"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
   const s =
     snap.summary;
 
-  const bestCtr =
-    snap
-      .campaigns
-      .filter(
-        x =>
-          x.clicks
-          >= 10
-      )
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          b.ctr
-          -
-          a.ctr
-      )[0];
-
-  const topSpend =
-    snap.campaigns[0];
-
   const rows = [
+
     [
       "Средний CPC",
       "По аккаунту",
@@ -1333,47 +1575,53 @@ function renderOverviewSummary(
         ? money(
             s.avg_cpc
           )
-        : "—"
+        : "—",
     ],
+
     [
-      "Конверсии",
+      "Order",
       `За ${snap.days} дней`,
       decimal(
-        s.conversions
-      )
+        s.order_conversions
+      ),
     ],
+
     [
-      "Средний CPA",
-      "По всем конверсиям",
-      s.cpa
+      "CPA Order",
+      "Цена выполнения Order",
+      s.order_cpa
         ? money(
-            s.cpa
+            s.order_cpa
           )
-        : "—"
-    ]
+        : "—",
+    ],
+
+    [
+      "Регистрации на вебинары/митапы",
+      "ID целей пока не добавлены",
+      decimal(
+        s.webinar_conversions
+      ),
+    ],
+
+    [
+      "Прохождения опросов",
+      "BHT + White Paper AXE",
+      decimal(
+        s.survey_conversions
+      ),
+    ],
+
+    [
+      "CPA опроса",
+      "Цена прохождения опроса",
+      s.survey_cpa
+        ? money(
+            s.survey_cpa
+          )
+        : "—",
+    ],
   ];
-
-  if (topSpend) {
-
-    rows.push([
-      "Максимальный расход",
-      topSpend.name,
-      money(
-        topSpend.spend
-      )
-    ]);
-  }
-
-  if (bestCtr) {
-
-    rows.push([
-      "Лучший CTR",
-      bestCtr.name,
-      pct(
-        bestCtr.ctr
-      )
-    ]);
-  }
 
   box.innerHTML =
     rows
@@ -1408,7 +1656,9 @@ function renderOverviewSummary(
 }
 
 function advancedSignals() {
-  const signals = [];
+
+  const signals =
+    [];
 
   const q =
     DATA
@@ -1428,18 +1678,6 @@ function advancedSignals() {
       ?.summary
     || {};
 
-  const r =
-    DATA
-      .retargeting
-      ?.summary
-    || {};
-
-  const at =
-    DATA
-      .attribution
-      ?.summary
-    || {};
-
   if (
     Number(
       q.negative_candidates
@@ -1448,6 +1686,7 @@ function advancedSignals() {
   ) {
 
     signals.push({
+
       severity:
         "critical",
 
@@ -1466,7 +1705,7 @@ function advancedSignals() {
           money(
             q.negative_candidate_spend
           )
-        }.`
+        }.`,
     });
   }
 
@@ -1478,6 +1717,7 @@ function advancedSignals() {
   ) {
 
     signals.push({
+
       severity:
         "critical",
 
@@ -1496,7 +1736,7 @@ function advancedSignals() {
           money(
             p.waste_candidate_spend
           )
-        }.`
+        }.`,
     });
   }
 
@@ -1508,6 +1748,7 @@ function advancedSignals() {
   ) {
 
     signals.push({
+
       severity:
         "opportunity",
 
@@ -1522,59 +1763,7 @@ function advancedSignals() {
         } сильных сегментов`,
 
       text:
-        "Сегменты с CPA заметно ниже среднего — кандидаты на ручную проверку корректировок."
-    });
-  }
-
-  if (
-    Number(
-      r.unavailable
-      || 0
-    ) > 0
-  ) {
-
-    signals.push({
-      severity:
-        "critical",
-
-      label:
-        "РЕТАРГЕТИНГ",
-
-      title:
-        `${
-          number(
-            r.unavailable
-          )
-        } недоступных условий`,
-
-      text:
-        "В условиях есть удалённые или недоступные цели/сегменты."
-    });
-  }
-
-  if (
-    Number(
-      at.model_sensitive
-      || 0
-    ) > 0
-  ) {
-
-    signals.push({
-      severity:
-        "warning",
-
-      label:
-        "АТРИБУЦИЯ",
-
-      title:
-        `${
-          number(
-            at.model_sensitive
-          )
-        } кампаний зависят от модели атрибуции`,
-
-      text:
-        "Вывод об эффективности заметно меняется между LC, FCCD, LSCCD и AUTO."
+        "Order CPA заметно ниже среднего — кандидаты на ручную проверку корректировок.",
     });
   }
 
@@ -1590,14 +1779,18 @@ function renderPriorityInsights(
       "priorityAlerts"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
   const signals =
     advancedSignals();
 
-  if (!signals.length) {
+  if (
+    !signals.length
+  ) {
 
     const c =
       snap.campaigns;
@@ -1605,9 +1798,12 @@ function renderPriorityInsights(
     const s =
       snap.summary;
 
-    if (c[0]) {
+    if (
+      c[0]
+    ) {
 
       signals.push({
+
         severity:
           "warning",
 
@@ -1622,7 +1818,7 @@ function renderPriorityInsights(
             money(
               c[0].spend
             )
-          } — максимальный расход среди кампаний.`
+          } — максимальный расход среди кампаний.`,
       });
     }
 
@@ -1643,9 +1839,12 @@ function renderPriorityInsights(
             a.avg_cpc
         )[0];
 
-    if (highCpc) {
+    if (
+      highCpc
+    ) {
 
       signals.push({
+
         severity:
           "warning",
 
@@ -1666,7 +1865,7 @@ function renderPriorityInsights(
                   s.avg_cpc
                 )
               : "—"
-          }.`
+          }.`,
       });
     }
 
@@ -1687,9 +1886,12 @@ function renderPriorityInsights(
             a.ctr
         )[0];
 
-    if (bestCtr) {
+    if (
+      bestCtr
+    ) {
 
       signals.push({
+
         severity:
           "opportunity",
 
@@ -1704,7 +1906,7 @@ function renderPriorityInsights(
             pct(
               bestCtr.ctr
             )
-          }.`
+          }.`,
       });
     }
   }
@@ -1746,13 +1948,15 @@ function renderPriorityInsights(
 /* ============================== ALERTS ============================== */
 
 function buildAlerts() {
+
   const snap =
     overviewSnapshot();
 
   const s =
     snap.summary;
 
-  const alerts = [];
+  const alerts =
+    [];
 
   for (
     const c
@@ -1760,17 +1964,15 @@ function buildAlerts() {
   ) {
 
     if (
-      c.conversions
-      === 0
+      c.conversions === 0
       &&
-      c.clicks
-      >= 20
+      c.clicks >= 20
       &&
-      c.spend
-      >= 1000
+      c.spend >= 1000
     ) {
 
       alerts.push({
+
         severity:
           "critical",
 
@@ -1798,7 +2000,7 @@ function buildAlerts() {
             pct(
               c.ctr
             )
-          }`
+          }`,
       });
     }
 
@@ -1811,11 +2013,11 @@ function buildAlerts() {
       *
       1.4
       &&
-      c.clicks
-      >= 5
+      c.clicks >= 5
     ) {
 
       alerts.push({
+
         severity:
           "warning",
 
@@ -1843,7 +2045,7 @@ function buildAlerts() {
             number(
               c.clicks
             )
-          } кликов`
+          } кликов`,
       });
     }
   }
@@ -1854,6 +2056,7 @@ function buildAlerts() {
   ) {
 
     alerts.push({
+
       severity:
         signal.severity,
 
@@ -1873,7 +2076,7 @@ function buildAlerts() {
         signal.text,
 
       meta:
-        signal.label
+        signal.label,
     });
   }
 
@@ -1881,12 +2084,15 @@ function buildAlerts() {
 }
 
 function renderAlerts() {
+
   const box =
     document.getElementById(
       "allAlerts"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -1898,7 +2104,9 @@ function renderAlerts() {
       "navAlertCount"
     );
 
-  if (badge) {
+  if (
+    badge
+  ) {
 
     badge.textContent =
       number(
@@ -1984,12 +2192,15 @@ function renderAlerts() {
 /* ============================== BUDGET ============================== */
 
 function renderBudget() {
+
   const box =
     document.getElementById(
       "budgetTable"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -1999,35 +2210,35 @@ function renderBudget() {
   const s =
     snap.summary;
 
-  function rec(c) {
+  function rec(
+    c
+  ) {
 
     if (
-      c.conversions
-      === 0
+      c.conversions === 0
       &&
-      c.clicks
-      >= 20
+      c.clicks >= 20
     ) {
 
       return (
-        "Проверить: расход без конверсий"
+        "Проверить: расход без отслеживаемых конверсий"
       );
     }
 
     if (
-      c.cpa
+      c.order_cpa
       &&
-      s.cpa
+      s.order_cpa
       &&
-      c.cpa
+      c.order_cpa
       <
-      s.cpa
+      s.order_cpa
       *
-      .8
+      0.8
     ) {
 
       return (
-        "Потенциал для масштабирования"
+        "Order CPA ниже среднего — потенциал для масштабирования"
       );
     }
 
@@ -2043,21 +2254,6 @@ function renderBudget() {
 
       return (
         "Проверить высокий CPC"
-      );
-    }
-
-    if (
-      s.ctr
-      &&
-      c.ctr
-      >
-      s.ctr
-      *
-      1.25
-    ) {
-
-      return (
-        "Сильный CTR"
       );
     }
 
@@ -2082,14 +2278,45 @@ function renderBudget() {
 
           <tr>
 
-            <th>Кампания</th>
-            <th>Расход</th>
-            <th>Доля</th>
-            <th>CTR</th>
-            <th>CPC</th>
-            <th>Конверсии</th>
-            <th>CPA</th>
-            <th>Сигнал</th>
+            <th>
+              Кампания
+            </th>
+
+            <th>
+              Расход
+            </th>
+
+            <th>
+              Доля
+            </th>
+
+            <th>
+              CPC
+            </th>
+
+            <th>
+              Order
+            </th>
+
+            <th>
+              CPA Order
+            </th>
+
+            <th>
+              Вебинар
+            </th>
+
+            <th>
+              Опрос
+            </th>
+
+            <th>
+              CPA опрос
+            </th>
+
+            <th>
+              Сигнал
+            </th>
 
           </tr>
 
@@ -2106,7 +2333,9 @@ function renderBudget() {
                   <tr>
 
                     <td>
-                      ${esc(c.name)}
+                      <strong>
+                        ${esc(c.name)}
+                      </strong>
                     </td>
 
                     <td>
@@ -2131,10 +2360,6 @@ function renderBudget() {
                     </td>
 
                     <td>
-                      ${pct(c.ctr)}
-                    </td>
-
-                    <td>
                       ${
                         c.avg_cpc
                           ? money(
@@ -2145,14 +2370,32 @@ function renderBudget() {
                     </td>
 
                     <td>
-                      ${decimal(c.conversions)}
+                      ${decimal(c.order_conversions)}
                     </td>
 
                     <td>
                       ${
-                        c.cpa
+                        c.order_cpa
                           ? money(
-                              c.cpa
+                              c.order_cpa
+                            )
+                          : "—"
+                      }
+                    </td>
+
+                    <td>
+                      ${decimal(c.webinar_conversions)}
+                    </td>
+
+                    <td>
+                      ${decimal(c.survey_conversions)}
+                    </td>
+
+                    <td>
+                      ${
+                        c.survey_cpa
+                          ? money(
+                              c.survey_cpa
                             )
                           : "—"
                       }
@@ -2224,7 +2467,7 @@ function creativeStatus(
       unattributable: [
         "⚫",
         "Нельзя определить"
-      ]
+      ],
     }[
       status
     ]
@@ -2237,12 +2480,15 @@ function creativeStatus(
 }
 
 function renderCreatives() {
+
   const box =
     document.getElementById(
       "creativeGrid"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -2250,7 +2496,9 @@ function renderCreatives() {
     DATA.creatives
     || [];
 
-  if (!rows.length) {
+  if (
+    !rows.length
+  ) {
 
     box.innerHTML =
       `
@@ -2490,15 +2738,48 @@ function renderCreatives() {
                   )
                 }
 
+                ${
+                  mini(
+                    "Order",
+                    decimal(
+                      c.order_conversions
+                    )
+                  )
+                }
+
+                ${
+                  mini(
+                    "Вебинар",
+                    decimal(
+                      c.webinar_conversions
+                    )
+                  )
+                }
+
+                ${
+                  mini(
+                    "Опрос",
+                    decimal(
+                      c.survey_conversions
+                    )
+                  )
+                }
+
+                ${
+                  mini(
+                    "CPA Order",
+                    c.order_cpa
+                      ? money(
+                          c.order_cpa
+                        )
+                      : "—"
+                  )
+                }
+
               </div>
 
               <p>
-                ${
-                  esc(
-                    c.reason
-                    || ""
-                  )
-                }
+                ${esc(c.reason || "")}
               </p>
 
               ${
@@ -2630,9 +2911,7 @@ function kpiGrid(
                       note
                       ||
                       `за ${
-                        DATA
-                          .meta
-                          ?.period_days
+                        DATA.meta?.period_days
                         || 60
                       } дней`
                     )
@@ -2703,12 +2982,15 @@ function table(
 /* ============================== KEYWORDS ============================== */
 
 function renderKeywords() {
+
   const box =
     document.getElementById(
       "keywordBody"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -2724,7 +3006,9 @@ function renderKeywords() {
     DATA.keyword_summary
     || {};
 
-  if (!rows.length) {
+  if (
+    !rows.length
+  ) {
 
     box.innerHTML =
       moduleEmpty(
@@ -2740,22 +3024,32 @@ function renderKeywords() {
       b
     ) =>
       Number(
-        b.conversions
+        b.order_conversions
         || 0
       )
       -
       Number(
-        a.conversions
+        a.order_conversions
         || 0
       )
       ||
       Number(
-        a.cpa
+        b.survey_conversions
         || 0
       )
       -
       Number(
-        b.cpa
+        a.survey_conversions
+        || 0
+      )
+      ||
+      Number(
+        b.clicks
+        || 0
+      )
+      -
+      Number(
+        a.clicks
         || 0
       )
   );
@@ -2771,62 +3065,51 @@ function renderKeywords() {
         )
       ],
       [
-        "С конверсиями",
-        number(
-          s.with_conversions
-          ??
-          rows.filter(
-            x =>
-              Number(
-                x.conversions
-              ) > 0
-          ).length
-        )
-      ],
-      [
-        "Конверсии",
+        "Order",
         decimal(
-          s.total_conversions
-          ??
-          rows.reduce(
-            (
-              z,
-              x
-            ) =>
-              z
-              +
-              Number(
-                x.conversions
-                || 0
-              ),
-            0
-          )
+          s.order_conversions
         )
       ],
       [
-        "Средний CPA",
-        Number(
-          s.avg_cpa
-          || 0
+        "Вебинары",
+        decimal(
+          s.webinar_conversions
         )
-          ? money(
-              s.avg_cpa
-            )
-          : "—"
-      ]
+      ],
+      [
+        "Опросы",
+        decimal(
+          s.survey_conversions
+        )
+      ],
     ])
+    +
+    `
+      <div
+        class="note"
+        style="
+          margin-bottom:12px;
+        "
+      >
+        Рейтинг в первую очередь ориентируется на Order.
+        Регистрации на вебинары/митапы пока показываются как 0,
+        потому что ID этих целей ещё не добавлены.
+      </div>
+    `
     +
     table(
       [
         "#",
         "Ключевая фраза",
-        "Конверсии",
-        "CPA",
-        "CR",
+        "Order",
+        "CPA Order",
+        "Вебинар",
+        "Опрос",
+        "CPA опрос",
         "Клики",
         "CTR",
         "Расход",
-        "Кампании"
+        "Кампании",
       ],
       rows
         .map(
@@ -2848,34 +3131,34 @@ function renderKeywords() {
               </td>
 
               <td>
-                ${decimal(x.conversions)}
+                ${decimal(x.order_conversions)}
               </td>
 
               <td>
                 ${
-                  x.cpa
+                  x.order_cpa
                     ? money(
-                        x.cpa
+                        x.order_cpa
                       )
                     : "—"
                 }
               </td>
 
               <td>
+                ${decimal(x.webinar_conversions)}
+              </td>
+
+              <td>
+                ${decimal(x.survey_conversions)}
+              </td>
+
+              <td>
                 ${
-                  pct(
-                    x.conversion_rate
-                    ??
-                    (
-                      x.clicks
-                        ? x.conversions
-                          /
-                          x.clicks
-                          *
-                          100
-                        : 0
-                    )
-                  )
+                  x.survey_cpa
+                    ? money(
+                        x.survey_cpa
+                      )
+                    : "—"
                 }
               </td>
 
@@ -2938,7 +3221,7 @@ function queryRecommendation(
         "🟢 Конвертирует",
 
       monitor:
-        "⚪ Наблюдать"
+        "⚪ Наблюдать",
     }[
       value
     ]
@@ -2948,12 +3231,15 @@ function queryRecommendation(
 }
 
 function renderQueries() {
+
   const box =
     document.getElementById(
       "queryBody"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -2969,7 +3255,9 @@ function renderQueries() {
     data.summary
     || {};
 
-  if (!rows.length) {
+  if (
+    !rows.length
+  ) {
 
     box.innerHTML =
       moduleEmpty(
@@ -2988,23 +3276,23 @@ function renderQueries() {
         )
       ],
       [
-        "Кандидаты в минус",
-        number(
-          s.negative_candidates
+        "Order",
+        decimal(
+          s.order_conversions
         )
       ],
       [
-        "Расход кандидатов",
-        money(
-          s.negative_candidate_spend
+        "Вебинары",
+        decimal(
+          s.webinar_conversions
         )
       ],
       [
-        "Новые ключи",
-        number(
-          s.new_keyword_candidates
+        "Опросы",
+        decimal(
+          s.survey_conversions
         )
-      ]
+      ],
     ])
     +
     `
@@ -3014,13 +3302,20 @@ function renderQueries() {
           margin-bottom:12px;
         "
       >
-        Семантическое расширение SYNONYM/RELATED_KEYWORD:
+        Кандидатов в минус:
         <strong>
-          ${pct(s.semantic_expansion_share)}
-        </strong>
-        расхода.
-        Рекомендации — диагностические,
-        перед изменениями их нужно проверить вручную.
+          ${number(s.negative_candidates)}
+        </strong>.
+
+        Расход кандидатов:
+        <strong>
+          ${money(s.negative_candidate_spend)}
+        </strong>.
+
+        Новых ключей:
+        <strong>
+          ${number(s.new_keyword_candidates)}
+        </strong>.
       </div>
     `
     +
@@ -3029,11 +3324,13 @@ function renderQueries() {
         "Запрос",
         "Сработавший ключ",
         "Тип",
-        "Конверсии",
-        "CPA",
+        "Order",
+        "CPA Order",
+        "Вебинар",
+        "Опрос",
         "Клики",
         "Расход",
-        "Рекомендация"
+        "Рекомендация",
       ],
       rows
         .slice(
@@ -3068,17 +3365,25 @@ function renderQueries() {
               </td>
 
               <td>
-                ${decimal(x.conversions)}
+                ${decimal(x.order_conversions)}
               </td>
 
               <td>
                 ${
-                  x.cpa
+                  x.order_cpa
                     ? money(
-                        x.cpa
+                        x.order_cpa
                       )
                     : "—"
                 }
+              </td>
+
+              <td>
+                ${decimal(x.webinar_conversions)}
+              </td>
+
+              <td>
+                ${decimal(x.survey_conversions)}
               </td>
 
               <td>
@@ -3125,7 +3430,7 @@ function placementStatus(
         "🟢 Сильная площадка",
 
       normal:
-        "⚪ Норма"
+        "⚪ Норма",
     }[
       status
     ]
@@ -3135,12 +3440,15 @@ function placementStatus(
 }
 
 function renderPlacements() {
+
   const box =
     document.getElementById(
       "placementBody"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -3156,7 +3464,9 @@ function renderPlacements() {
     data.summary
     || {};
 
-  if (!rows.length) {
+  if (
+    !rows.length
+  ) {
 
     box.innerHTML =
       moduleEmpty(
@@ -3175,36 +3485,60 @@ function renderPlacements() {
         )
       ],
       [
-        "На проверку",
-        number(
-          s.waste_candidates
+        "Order",
+        decimal(
+          s.order_conversions
         )
       ],
       [
-        "Расход на проверку",
-        money(
-          s.waste_candidate_spend
+        "Вебинары",
+        decimal(
+          s.webinar_conversions
         )
       ],
       [
-        "Сильных",
-        number(
-          s.strong_placements
+        "Опросы",
+        decimal(
+          s.survey_conversions
         )
-      ]
+      ],
     ])
+    +
+    `
+      <div
+        class="note"
+        style="
+          margin-bottom:12px;
+        "
+      >
+        На проверку:
+        <strong>
+          ${number(s.waste_candidates)}
+        </strong>
+        площадок,
+
+        расход
+        <strong>
+          ${money(s.waste_candidate_spend)}
+        </strong>.
+
+        Сильные площадки определяются прежде всего по Order CPA.
+      </div>
+    `
     +
     table(
       [
         "Площадка",
         "Сеть",
-        "Конверсии",
-        "CPA",
+        "Order",
+        "CPA Order",
+        "Вебинар",
+        "Опрос",
         "Клики",
         "Расход",
         "Bounce",
         "Глубина",
-        "Статус"
+        "Статус",
       ],
       rows
         .slice(
@@ -3233,17 +3567,25 @@ function renderPlacements() {
               </td>
 
               <td>
-                ${decimal(x.conversions)}
+                ${decimal(x.order_conversions)}
               </td>
 
               <td>
                 ${
-                  x.cpa
+                  x.order_cpa
                     ? money(
-                        x.cpa
+                        x.order_cpa
                       )
                     : "—"
                 }
+              </td>
+
+              <td>
+                ${decimal(x.webinar_conversions)}
+              </td>
+
+              <td>
+                ${decimal(x.survey_conversions)}
               </td>
 
               <td>
@@ -3294,24 +3636,120 @@ function renderPlacements() {
 
 /* ============================== AUDIENCE ============================== */
 
+const AUDIENCE_LABELS = {
+
+  age: {
+    AGE_0_17:
+      "0–17",
+
+    AGE_18_24:
+      "18–24",
+
+    AGE_25_34:
+      "25–34",
+
+    AGE_35_44:
+      "35–44",
+
+    AGE_45_54:
+      "45–54",
+
+    AGE_55:
+      "55+",
+
+    UNKNOWN:
+      "Не определён",
+  },
+
+  gender: {
+    GENDER_MALE:
+      "Мужчины",
+
+    GENDER_FEMALE:
+      "Женщины",
+
+    UNKNOWN:
+      "Не определён",
+  },
+
+  income_grade: {
+    VERY_HIGH:
+      "Топ 1%",
+
+    HIGH:
+      "Топ 2–5%",
+
+    ABOVE_AVERAGE:
+      "Топ 6–10%",
+
+    OTHER:
+      "Остальные 90%",
+
+    UNKNOWN:
+      "Не определён",
+  },
+
+  device: {
+    DESKTOP:
+      "Desktop",
+
+    MOBILE:
+      "Mobile",
+
+    TABLET:
+      "Tablet",
+
+    SMART_TV:
+      "Smart TV",
+
+    UNKNOWN:
+      "Не определён",
+  },
+};
+
+function audienceValueLabel(
+  field,
+  value
+) {
+
+  return (
+    AUDIENCE_LABELS[
+      field
+    ]?.[
+      value
+    ]
+    ||
+    value
+    ||
+    "Не определён"
+  );
+}
+
 function audienceLabel(
   x
 ) {
 
-  return (
-    [
-      x.age,
-      x.gender,
-      x.income_grade,
+  return [
+    audienceValueLabel(
+      "age",
+      x.age
+    ),
+    audienceValueLabel(
+      "gender",
+      x.gender
+    ),
+    audienceValueLabel(
+      "income_grade",
+      x.income_grade
+    ),
+    audienceValueLabel(
+      "device",
       x.device
-    ]
-      .filter(
-        Boolean
-      )
-      .join(
-        " · "
-      )
-  );
+    ),
+  ]
+    .join(
+      " · "
+    );
 }
 
 function audienceStatus(
@@ -3343,13 +3781,503 @@ function audienceStatus(
   );
 }
 
+function audienceFilterPass(
+  row
+) {
+
+  for (
+    const [
+      field,
+      selected
+    ]
+    of Object.entries(
+      AUDIENCE_FILTERS
+    )
+  ) {
+
+    if (
+      selected.size
+      &&
+      !selected.has(
+        String(
+          row[field]
+          || "UNKNOWN"
+        )
+      )
+    ) {
+
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function audienceFilterGroup(
+  field,
+  title,
+  values
+) {
+
+  const selected =
+    AUDIENCE_FILTERS[
+      field
+    ];
+
+  return `
+
+    <div
+      style="
+        padding:14px;
+        border:1px solid #20354e;
+        border-radius:12px;
+        background:#0e1c2e;
+      "
+    >
+
+      <div
+        style="
+          font-size:10px;
+          color:#8ea2bb;
+          margin-bottom:10px;
+          text-transform:uppercase;
+          letter-spacing:.06em;
+        "
+      >
+        ${esc(title)}
+      </div>
+
+      <div
+        style="
+          display:flex;
+          flex-wrap:wrap;
+          gap:7px;
+        "
+      >
+
+        ${
+          values
+            .map(
+              value => {
+
+                const active =
+                  selected.has(
+                    String(
+                      value
+                    )
+                  );
+
+                return `
+
+                  <button
+                    type="button"
+                    data-audience-filter="${esc(field)}"
+                    data-audience-value="${esc(value)}"
+                    style="
+                      border:1px solid ${
+                        active
+                          ? "#5aa7ff"
+                          : "#20354e"
+                      };
+                      background:${
+                        active
+                          ? "#15385c"
+                          : "#091525"
+                      };
+                      color:${
+                        active
+                          ? "#fff"
+                          : "#a8bad0"
+                      };
+                      border-radius:999px;
+                      padding:7px 10px;
+                      cursor:pointer;
+                      font-size:10px;
+                    "
+                  >
+                    ${
+                      esc(
+                        audienceValueLabel(
+                          field,
+                          value
+                        )
+                      )
+                    }
+                  </button>
+
+                `;
+              }
+            )
+            .join("")
+        }
+
+      </div>
+
+    </div>
+
+  `;
+}
+
+function audienceMetricValue(
+  row
+) {
+
+  return Number(
+    row[
+      AUDIENCE_METRIC
+    ]
+    || 0
+  );
+}
+
+function pieData(
+  rows,
+  field
+) {
+
+  const map =
+    new Map();
+
+  for (
+    const row
+    of rows
+  ) {
+
+    const key =
+      String(
+        row[field]
+        || "UNKNOWN"
+      );
+
+    map.set(
+      key,
+      (
+        map.get(
+          key
+        )
+        || 0
+      )
+      +
+      audienceMetricValue(
+        row
+      )
+    );
+  }
+
+  return [
+    ...map.entries()
+  ]
+    .map(
+      (
+        [
+          key,
+          value
+        ]
+      ) => ({
+
+        key,
+
+        label:
+          audienceValueLabel(
+            field,
+            key
+          ),
+
+        value,
+      })
+    )
+    .filter(
+      x =>
+        x.value
+        > 0
+    )
+    .sort(
+      (
+        a,
+        b
+      ) =>
+        b.value
+        -
+        a.value
+    );
+}
+
+function audienceMetricLabel() {
+
+  return (
+    {
+      cost:
+        "Расход",
+
+      clicks:
+        "Клики",
+
+      order_conversions:
+        "Order",
+
+      webinar_conversions:
+        "Вебинары",
+
+      survey_conversions:
+        "Опросы",
+    }[
+      AUDIENCE_METRIC
+    ]
+    ||
+    AUDIENCE_METRIC
+  );
+}
+
+function pieChart(
+  title,
+  field,
+  data
+) {
+
+  if (
+    !data.length
+  ) {
+
+    return `
+
+      <div
+        style="
+          border:1px solid #20354e;
+          border-radius:14px;
+          padding:16px;
+          background:#0e1c2e;
+        "
+      >
+
+        <strong>
+          ${esc(title)}
+        </strong>
+
+        <div
+          style="
+            color:#8ea2bb;
+            font-size:11px;
+            margin-top:12px;
+          "
+        >
+          Нет данных для выбранной метрики.
+        </div>
+
+      </div>
+
+    `;
+  }
+
+  const total =
+    data.reduce(
+      (
+        sum,
+        x
+      ) =>
+        sum
+        +
+        x.value,
+      0
+    );
+
+  const colors = [
+    "#5aa7ff",
+    "#52d39a",
+    "#ffb65c",
+    "#9c86ff",
+    "#ff6b72",
+    "#55c0ff",
+    "#c2d36f",
+    "#d28cff",
+  ];
+
+  let cursor =
+    0;
+
+  const slices =
+    data.map(
+      (
+        x,
+        index
+      ) => {
+
+        const from =
+          total
+            ? cursor
+              / total
+              * 100
+            : 0;
+
+        cursor +=
+          x.value;
+
+        const to =
+          total
+            ? cursor
+              / total
+              * 100
+            : 0;
+
+        return `${
+          colors[
+            index
+            %
+            colors.length
+          ]
+        } ${from}% ${to}%`;
+      }
+    );
+
+  return `
+
+    <div
+      style="
+        border:1px solid #20354e;
+        border-radius:14px;
+        padding:16px;
+        background:#0e1c2e;
+        min-width:0;
+      "
+    >
+
+      <strong>
+        ${esc(title)}
+      </strong>
+
+      <div
+        style="
+          display:grid;
+          grid-template-columns:150px 1fr;
+          gap:18px;
+          align-items:center;
+          margin-top:15px;
+        "
+      >
+
+        <div
+          style="
+            width:140px;
+            height:140px;
+            border-radius:50%;
+            background:conic-gradient(${slices.join(",")});
+            position:relative;
+            margin:auto;
+          "
+        >
+
+          <div
+            style="
+              position:absolute;
+              inset:31px;
+              border-radius:50%;
+              background:#0e1c2e;
+              display:grid;
+              place-items:center;
+              text-align:center;
+              font-size:10px;
+              color:#8ea2bb;
+            "
+          >
+            ${esc(audienceMetricLabel())}
+          </div>
+
+        </div>
+
+        <div
+          style="
+            display:grid;
+            gap:8px;
+            min-width:0;
+          "
+        >
+
+          ${
+            data
+              .slice(
+                0,
+                8
+              )
+              .map(
+                (
+                  x,
+                  index
+                ) => {
+
+                  const share =
+                    total
+                      ? x.value
+                        / total
+                        * 100
+                      : 0;
+
+                  return `
+
+                    <div
+                      style="
+                        display:grid;
+                        grid-template-columns:10px minmax(0,1fr) auto;
+                        gap:7px;
+                        align-items:center;
+                        font-size:10px;
+                      "
+                    >
+
+                      <span
+                        style="
+                          width:9px;
+                          height:9px;
+                          border-radius:50%;
+                          background:${
+                            colors[
+                              index
+                              %
+                              colors.length
+                            ]
+                          };
+                        "
+                      ></span>
+
+                      <span
+                        style="
+                          color:#b8c8d9;
+                          overflow:hidden;
+                          text-overflow:ellipsis;
+                        "
+                      >
+                        ${esc(x.label)}
+                      </span>
+
+                      <strong>
+                        ${share.toFixed(1)}%
+                      </strong>
+
+                    </div>
+
+                  `;
+                }
+              )
+              .join("")
+          }
+
+        </div>
+
+      </div>
+
+    </div>
+
+  `;
+}
+
 function renderAudience() {
+
   const box =
     document.getElementById(
       "audienceBody"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -3361,11 +4289,9 @@ function renderAudience() {
     data.rows
     || [];
 
-  const s =
-    data.summary
-    || {};
-
-  if (!rows.length) {
+  if (
+    !rows.length
+  ) {
 
     box.innerHTML =
       moduleEmpty(
@@ -3375,138 +4301,482 @@ function renderAudience() {
     return;
   }
 
-  box.innerHTML =
-    kpiGrid([
+  const values = {
+
+    age:
       [
-        "Сегментов",
-        number(
-          s.segments
+        ...new Set(
+          rows.map(
+            x =>
+              String(
+                x.age
+                || "UNKNOWN"
+              )
+          )
         )
       ],
+
+    gender:
       [
-        "Потенциал",
-        number(
-          s.opportunities
+        ...new Set(
+          rows.map(
+            x =>
+              String(
+                x.gender
+                || "UNKNOWN"
+              )
+          )
         )
       ],
+
+    income_grade:
       [
-        "Дорогих",
-        number(
-          s.expensive_segments
+        ...new Set(
+          rows.map(
+            x =>
+              String(
+                x.income_grade
+                || "UNKNOWN"
+              )
+          )
         )
       ],
+
+    device:
       [
-        "CPA аккаунта",
-        s.account_cpa
-          ? money(
-              s.account_cpa
-            )
-          : "—"
-      ]
-    ])
-    +
-    `
+        ...new Set(
+          rows.map(
+            x =>
+              String(
+                x.device
+                || "UNKNOWN"
+              )
+          )
+        )
+      ],
+  };
+
+  const filtered =
+    rows.filter(
+      audienceFilterPass
+    );
+
+  const filteredCost =
+    filtered.reduce(
+      (
+        sum,
+        x
+      ) =>
+        sum
+        +
+        Number(
+          x.cost
+          || 0
+        ),
+      0
+    );
+
+  const filteredOrders =
+    filtered.reduce(
+      (
+        sum,
+        x
+      ) =>
+        sum
+        +
+        Number(
+          x.order_conversions
+          || 0
+        ),
+      0
+    );
+
+  const filteredWebinars =
+    filtered.reduce(
+      (
+        sum,
+        x
+      ) =>
+        sum
+        +
+        Number(
+          x.webinar_conversions
+          || 0
+        ),
+      0
+    );
+
+  const filteredSurveys =
+    filtered.reduce(
+      (
+        sum,
+        x
+      ) =>
+        sum
+        +
+        Number(
+          x.survey_conversions
+          || 0
+        ),
+      0
+    );
+
+  box.innerHTML = `
+
+    ${
+      kpiGrid([
+        [
+          "Сегментов после фильтра",
+          number(
+            filtered.length
+          )
+        ],
+        [
+          "Order",
+          decimal(
+            filteredOrders
+          )
+        ],
+        [
+          "Вебинары",
+          decimal(
+            filteredWebinars
+          )
+        ],
+        [
+          "Опросы",
+          decimal(
+            filteredSurveys
+          )
+        ],
+      ])
+    }
+
+    <div
+      style="
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:12px;
+        flex-wrap:wrap;
+        margin:0 0 12px;
+      "
+    >
+
+      <div>
+
+        <strong>
+          Фильтры аудитории
+        </strong>
+
+        <div
+          style="
+            color:#8ea2bb;
+            font-size:11px;
+            margin-top:4px;
+          "
+        >
+          Внутри одной характеристики можно выбрать несколько значений.
+          Разные характеристики комбинируются между собой.
+        </div>
+
+      </div>
+
       <div
-        class="note"
         style="
-          margin-bottom:12px;
+          display:flex;
+          gap:8px;
+          align-items:center;
         "
       >
-        Это рекомендации для ручной проверки корректировок ставок,
-        а не автоматическое изменение кампаний.
+
+        <select
+          id="audienceMetricSelect"
+          style="
+            background:#0d1b2c;
+            color:#dce7f2;
+            border:1px solid #20354e;
+            border-radius:9px;
+            padding:9px 10px;
+          "
+        >
+
+          <option
+            value="cost"
+            ${
+              AUDIENCE_METRIC
+              === "cost"
+                ? "selected"
+                : ""
+            }
+          >
+            Диаграммы: расход
+          </option>
+
+          <option
+            value="clicks"
+            ${
+              AUDIENCE_METRIC
+              === "clicks"
+                ? "selected"
+                : ""
+            }
+          >
+            Диаграммы: клики
+          </option>
+
+          <option
+            value="order_conversions"
+            ${
+              AUDIENCE_METRIC
+              === "order_conversions"
+                ? "selected"
+                : ""
+            }
+          >
+            Диаграммы: Order
+          </option>
+
+          <option
+            value="webinar_conversions"
+            ${
+              AUDIENCE_METRIC
+              === "webinar_conversions"
+                ? "selected"
+                : ""
+            }
+          >
+            Диаграммы: вебинары
+          </option>
+
+          <option
+            value="survey_conversions"
+            ${
+              AUDIENCE_METRIC
+              === "survey_conversions"
+                ? "selected"
+                : ""
+            }
+          >
+            Диаграммы: опросы
+          </option>
+
+        </select>
+
+        <button
+          type="button"
+          id="audienceResetFilters"
+          class="ghost"
+        >
+          Сбросить
+        </button>
+
       </div>
-    `
-    +
-    table(
-      [
-        "Сегмент",
-        "Конверсии",
-        "CPA",
-        "CR",
-        "Клики",
-        "Расход",
-        "Статус",
-        "Рекомендация"
-      ],
-      rows
-        .slice(
-          0,
-          500
+
+    </div>
+
+    <div
+      style="
+        display:grid;
+        grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+        gap:10px;
+        margin-bottom:16px;
+      "
+    >
+
+      ${
+        audienceFilterGroup(
+          "age",
+          "Возраст",
+          values.age
         )
-        .map(
-          x => `
+      }
 
-            <tr>
+      ${
+        audienceFilterGroup(
+          "gender",
+          "Пол",
+          values.gender
+        )
+      }
 
-              <td>
-                <strong>
+      ${
+        audienceFilterGroup(
+          "income_grade",
+          "Платежеспособность",
+          values.income_grade
+        )
+      }
+
+      ${
+        audienceFilterGroup(
+          "device",
+          "Устройство",
+          values.device
+        )
+      }
+
+    </div>
+
+    <div
+      style="
+        display:grid;
+        grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+        gap:12px;
+        margin-bottom:18px;
+      "
+    >
+
+      ${
+        pieChart(
+          "Возраст",
+          "age",
+          pieData(
+            filtered,
+            "age"
+          )
+        )
+      }
+
+      ${
+        pieChart(
+          "Платежеспособность",
+          "income_grade",
+          pieData(
+            filtered,
+            "income_grade"
+          )
+        )
+      }
+
+      ${
+        pieChart(
+          "Устройства",
+          "device",
+          pieData(
+            filtered,
+            "device"
+          )
+        )
+      }
+
+    </div>
+
+    <div
+      class="note"
+      style="
+        margin-bottom:12px;
+      "
+    >
+      Расход в текущем фильтре:
+      <strong>
+        ${money(filteredCost)}
+      </strong>.
+
+      Audience-рекомендации backend рассчитывает прежде всего по Order CPA.
+    </div>
+
+    ${
+      table(
+        [
+          "Сегмент",
+          "Order",
+          "CPA Order",
+          "Вебинар",
+          "Опрос",
+          "CPA опрос",
+          "Клики",
+          "Расход",
+          "Статус",
+          "Рекомендация",
+        ],
+        filtered
+          .slice(
+            0,
+            500
+          )
+          .map(
+            x => `
+
+              <tr>
+
+                <td>
+                  <strong>
+                    ${esc(audienceLabel(x))}
+                  </strong>
+                </td>
+
+                <td>
+                  ${decimal(x.order_conversions)}
+                </td>
+
+                <td>
                   ${
-                    esc(
-                      audienceLabel(
-                        x
-                      )
-                    )
+                    x.order_cpa
+                      ? money(
+                          x.order_cpa
+                        )
+                      : "—"
                   }
-                </strong>
-              </td>
+                </td>
 
-              <td>
-                ${decimal(x.conversions)}
-              </td>
+                <td>
+                  ${decimal(x.webinar_conversions)}
+                </td>
 
-              <td>
-                ${
-                  x.cpa
-                    ? money(
-                        x.cpa
-                      )
-                    : "—"
-                }
-              </td>
+                <td>
+                  ${decimal(x.survey_conversions)}
+                </td>
 
-              <td>
-                ${pct(x.cr)}
-              </td>
+                <td>
+                  ${
+                    x.survey_cpa
+                      ? money(
+                          x.survey_cpa
+                        )
+                      : "—"
+                  }
+                </td>
 
-              <td>
-                ${number(x.clicks)}
-              </td>
+                <td>
+                  ${number(x.clicks)}
+                </td>
 
-              <td>
-                ${money(x.cost)}
-              </td>
+                <td>
+                  ${money(x.cost)}
+                </td>
 
-              <td>
-                ${
-                  esc(
-                    audienceStatus(
-                      x
-                    )
-                  )
-                }
-              </td>
+                <td>
+                  ${esc(audienceStatus(x))}
+                </td>
 
-              <td>
-                ${esc(x.recommendation)}
-              </td>
+                <td>
+                  ${esc(x.recommendation)}
+                </td>
 
-            </tr>
+              </tr>
 
-          `
-        )
-        .join("")
-    );
+            `
+          )
+          .join("")
+      )
+    }
+
+  `;
 }
 
 /* ============================== GEO ============================== */
 
 function renderGeo() {
+
   const box =
     document.getElementById(
       "geoBody"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -3526,7 +4796,9 @@ function renderGeo() {
     data.summary
     || {};
 
-  if (!rows.length) {
+  if (
+    !rows.length
+  ) {
 
     box.innerHTML =
       moduleEmpty(
@@ -3556,23 +4828,23 @@ function renderGeo() {
         )
       ],
       [
-        "Пар отличается от таргета",
-        number(
-          s.different_target_pairs
+        "Order",
+        decimal(
+          s.order_conversions
         )
       ],
       [
-        "Расход по таким парам",
-        money(
-          s.different_target_spend
+        "Вебинары",
+        decimal(
+          s.webinar_conversions
         )
       ],
       [
-        "Доля расхода",
-        pct(
-          s.different_target_share
+        "Опросы",
+        decimal(
+          s.survey_conversions
         )
-      ]
+      ],
     ])
     +
     `
@@ -3582,21 +4854,28 @@ function renderGeo() {
           margin-bottom:12px;
         "
       >
-        Отличие фактического региона от региона таргетинга
-        не означает ошибку автоматически:
-        это может быть расширенный геотаргетинг
-        или вложенность регионов.
+        Отличие фактического региона от таргетинга не означает ошибку автоматически.
+
+        Расход по отличающимся парам:
+        <strong>
+          ${money(s.different_target_spend)}
+        </strong>
+
+        (${pct(s.different_target_share)}).
       </div>
     `
     +
     table(
       [
         "Фактический регион",
-        "Конверсии",
-        "CPA",
+        "Order",
+        "CPA Order",
+        "Вебинар",
+        "Опрос",
+        "CPA опрос",
         "Клики",
         "CTR",
-        "Расход"
+        "Расход",
       ],
       rows
         .slice(
@@ -3615,14 +4894,32 @@ function renderGeo() {
               </td>
 
               <td>
-                ${decimal(x.conversions)}
+                ${decimal(x.order_conversions)}
               </td>
 
               <td>
                 ${
-                  x.cpa
+                  x.order_cpa
                     ? money(
-                        x.cpa
+                        x.order_cpa
+                      )
+                    : "—"
+                }
+              </td>
+
+              <td>
+                ${decimal(x.webinar_conversions)}
+              </td>
+
+              <td>
+                ${decimal(x.survey_conversions)}
+              </td>
+
+              <td>
+                ${
+                  x.survey_cpa
+                    ? money(
+                        x.survey_cpa
                       )
                     : "—"
                 }
@@ -3659,7 +4956,7 @@ function renderGeo() {
             <div>
 
               <h3>
-                Где фактический регион отличается от таргетинга
+                Фактический регион отличается от таргетинга
               </h3>
 
             </div>
@@ -3671,9 +4968,10 @@ function renderGeo() {
               [
                 "Таргетинг",
                 "Фактическое местоположение",
-                "Конверсии",
-                "CPA",
-                "Расход"
+                "Order",
+                "Вебинар",
+                "Опрос",
+                "Расход",
               ],
               mismatch
                 .map(
@@ -3690,17 +4988,15 @@ function renderGeo() {
                       </td>
 
                       <td>
-                        ${decimal(x.conversions)}
+                        ${decimal(x.order_conversions)}
                       </td>
 
                       <td>
-                        ${
-                          x.cpa
-                            ? money(
-                                x.cpa
-                              )
-                            : "—"
-                        }
+                        ${decimal(x.webinar_conversions)}
+                      </td>
+
+                      <td>
+                        ${decimal(x.survey_conversions)}
                       </td>
 
                       <td>
@@ -3723,13 +5019,49 @@ function renderGeo() {
 
 /* ============================== POSITIONS ============================== */
 
+function slotLabel(
+  value
+) {
+
+  return (
+    {
+      PREMIUMBLOCK:
+        "Премиум-показы",
+
+      OTHER:
+        "Остальные показы",
+
+      COMMERCIAL_SEARCH:
+        "Коммерческий поиск",
+
+      ALONE:
+        "Эксклюзивное размещение",
+
+      SUGGEST:
+        "Поисковые подсказки",
+
+      PRODUCT_GALLERY:
+        "Товарная галерея",
+    }[
+      value
+    ]
+    ||
+    value
+    ||
+    "—"
+  );
+}
+
 function renderPositions() {
+
   const box =
     document.getElementById(
       "positionBody"
     );
 
-  if (!box) {
+  if (
+    !box
+  ) {
     return;
   }
 
@@ -3745,7 +5077,9 @@ function renderPositions() {
     data.summary
     || {};
 
-  if (!rows.length) {
+  if (
+    !rows.length
+  ) {
 
     box.innerHTML =
       moduleEmpty(
@@ -3764,27 +5098,41 @@ function renderPositions() {
         )
       ],
       [
-        "Расход TV ≥ 80",
-        money(
-          s.high_traffic_volume_spend
+        "Order",
+        decimal(
+          s.order_conversions
         )
       ],
       [
-        "Доля TV ≥ 80",
-        pct(
-          s.high_traffic_volume_share
+        "Вебинары",
+        decimal(
+          s.webinar_conversions
         )
       ],
       [
-        "Период",
-        `${
-          DATA
-            .meta
-            ?.period_days
-          || 60
-        } дней`
-      ]
+        "Опросы",
+        decimal(
+          s.survey_conversions
+        )
+      ],
     ])
+    +
+    `
+      <div
+        class="note"
+        style="
+          margin-bottom:12px;
+        "
+      >
+        Расход при AvgTrafficVolume ≥ 80:
+
+        <strong>
+          ${money(s.high_traffic_volume_spend)}
+        </strong>
+
+        (${pct(s.high_traffic_volume_share)}).
+      </div>
+    `
     +
     table(
       [
@@ -3793,10 +5141,11 @@ function renderPositions() {
         "Traffic Volume",
         "Ср. ставка",
         "CPC",
-        "CPA",
-        "CTR",
-        "Weighted CTR",
-        "Расход"
+        "Order",
+        "CPA Order",
+        "Вебинар",
+        "Опрос",
+        "Расход",
       ],
       rows
         .slice(
@@ -3815,7 +5164,7 @@ function renderPositions() {
               </td>
 
               <td>
-                ${esc(x.slot)}
+                ${esc(slotLabel(x.slot))}
               </td>
 
               <td>
@@ -3843,710 +5192,29 @@ function renderPositions() {
               </td>
 
               <td>
+                ${decimal(x.order_conversions)}
+              </td>
+
+              <td>
                 ${
-                  x.cpa
+                  x.order_cpa
                     ? money(
-                        x.cpa
+                        x.order_cpa
                       )
                     : "—"
                 }
               </td>
 
               <td>
-                ${pct(x.ctr)}
+                ${decimal(x.webinar_conversions)}
               </td>
 
               <td>
-                ${pct(x.weighted_ctr)}
+                ${decimal(x.survey_conversions)}
               </td>
 
               <td>
                 ${money(x.cost)}
-              </td>
-
-            </tr>
-
-          `
-        )
-        .join("")
-    );
-}
-
-/* ============================== ATTRIBUTION ============================== */
-
-function interpretationLabel(
-  value
-) {
-
-  return (
-    {
-      assist:
-        "🟢 Недооценена Last Click",
-
-      model_sensitive:
-        "🟡 Зависит от модели",
-
-      stable:
-        "⚪ Стабильна"
-    }[
-      value
-    ]
-    ||
-    "⚪ Без оценки"
-  );
-}
-
-function modelConv(
-  row,
-  model
-) {
-
-  return (
-    row
-      .models
-      ?.[model]
-      ?.conversions
-    ??
-    null
-  );
-}
-
-function renderAttribution() {
-  const box =
-    document.getElementById(
-      "attributionBody"
-    );
-
-  if (!box) {
-    return;
-  }
-
-  const data =
-    DATA.attribution
-    || {};
-
-  const rows =
-    data.rows
-    || [];
-
-  const s =
-    data.summary
-    || {};
-
-  if (!rows.length) {
-
-    box.innerHTML =
-      moduleEmpty(
-        "Attribution Lab недоступен или в отчётах нет конверсионных данных."
-      );
-
-    return;
-  }
-
-  box.innerHTML =
-    kpiGrid([
-      [
-        "Кампаний",
-        number(
-          s.campaigns
-        )
-      ],
-      [
-        "Зависят от модели",
-        number(
-          s.model_sensitive
-        )
-      ],
-      [
-        "Assist-кампаний",
-        number(
-          s.assist_campaigns
-        )
-      ],
-      [
-        "Стабильных",
-        number(
-          s.stable_campaigns
-        )
-      ]
-    ])
-    +
-    `
-      <div
-        class="note"
-        style="
-          margin-bottom:12px;
-        "
-      >
-        Stability Score показывает,
-        насколько близки результаты разных моделей атрибуции.
-        Чем ниже показатель,
-        тем опаснее оценивать кампанию только по Last Click.
-      </div>
-    `
-    +
-    table(
-      [
-        "Кампания",
-        "LC",
-        "FCCD",
-        "LSCCD",
-        "AUTO",
-        "Stability",
-        "Интерпретация"
-      ],
-      rows
-        .map(
-          x => `
-
-            <tr>
-
-              <td>
-                <strong>
-                  ${
-                    esc(
-                      x.campaign_name
-                      ||
-                      x.campaign_id
-                    )
-                  }
-                </strong>
-              </td>
-
-              <td>
-                ${
-                  modelConv(
-                    x,
-                    "LC"
-                  )
-                  == null
-                    ? "—"
-                    : decimal(
-                        modelConv(
-                          x,
-                          "LC"
-                        )
-                      )
-                }
-              </td>
-
-              <td>
-                ${
-                  modelConv(
-                    x,
-                    "FCCD"
-                  )
-                  == null
-                    ? "—"
-                    : decimal(
-                        modelConv(
-                          x,
-                          "FCCD"
-                        )
-                      )
-                }
-              </td>
-
-              <td>
-                ${
-                  modelConv(
-                    x,
-                    "LSCCD"
-                  )
-                  == null
-                    ? "—"
-                    : decimal(
-                        modelConv(
-                          x,
-                          "LSCCD"
-                        )
-                      )
-                }
-              </td>
-
-              <td>
-                ${
-                  modelConv(
-                    x,
-                    "AUTO"
-                  )
-                  == null
-                    ? "—"
-                    : decimal(
-                        modelConv(
-                          x,
-                          "AUTO"
-                        )
-                      )
-                }
-              </td>
-
-              <td>
-                ${pct(x.stability_score)}
-              </td>
-
-              <td>
-                ${
-                  esc(
-                    interpretationLabel(
-                      x.interpretation
-                    )
-                  )
-                }
-              </td>
-
-            </tr>
-
-          `
-        )
-        .join("")
-    );
-}
-
-/* ============================== GOALS ============================== */
-
-function renderGoals() {
-  const box =
-    document.getElementById(
-      "goalBody"
-    );
-
-  if (!box) {
-    return;
-  }
-
-  const data =
-    DATA.goals
-    || {};
-
-  const rows =
-    data.rows
-    || [];
-
-  const s =
-    data.summary
-    || {};
-
-  if (!rows.length) {
-
-    box.innerHTML =
-      moduleEmpty(
-        s.message
-        ||
-        "Priority goals в настройках кампаний не найдены или модуль недоступен."
-      );
-
-    return;
-  }
-
-  box.innerHTML =
-    kpiGrid([
-      [
-        "Priority goals",
-        number(
-          s.goals
-        )
-      ],
-      [
-        "С конверсиями",
-        number(
-          s.goals_with_conversions
-        )
-      ],
-      [
-        "Конверсии целей",
-        decimal(
-          s.total_goal_conversions
-        )
-      ],
-      [
-        "Revenue целей",
-        money(
-          s.total_goal_revenue
-        )
-      ]
-    ])
-    +
-    `
-      <div
-        class="note"
-        style="
-          margin-bottom:12px;
-        "
-      >
-        Direct API отдаёт ID priority goals;
-        без отдельного API Метрики их названия
-        здесь отображаются как ID цели.
-      </div>
-    `
-    +
-    table(
-      [
-        "Цель",
-        "Конверсии",
-        "Revenue",
-        "Кампаний",
-        "Кампании"
-      ],
-      rows
-        .map(
-          x => `
-
-            <tr>
-
-              <td>
-                <strong>
-                  ${
-                    esc(
-                      x.name
-                      ||
-                      `Цель ${
-                        x.goal_id
-                      }`
-                    )
-                  }
-                </strong>
-              </td>
-
-              <td>
-                ${decimal(x.conversions)}
-              </td>
-
-              <td>
-                ${money(x.revenue)}
-              </td>
-
-              <td>
-                ${number(x.campaign_count)}
-              </td>
-
-              <td>
-                ${
-                  esc(
-                    (
-                      x.campaigns
-                      || []
-                    )
-                      .join(
-                        ", "
-                      )
-                    ||
-                    "—"
-                  )
-                }
-              </td>
-
-            </tr>
-
-          `
-        )
-        .join("")
-    );
-}
-
-/* ============================== MEDIA ============================== */
-
-function renderMedia() {
-  const box =
-    document.getElementById(
-      "mediaBody"
-    );
-
-  if (!box) {
-    return;
-  }
-
-  const data =
-    DATA.media
-    || {};
-
-  const rows =
-    data.rows
-    || [];
-
-  const s =
-    data.summary
-    || {};
-
-  if (!rows.length) {
-
-    box.innerHTML =
-      moduleEmpty(
-        s.message
-        ||
-        "Медийные кампании не найдены или модуль недоступен."
-      );
-
-    return;
-  }
-
-  box.innerHTML =
-    kpiGrid([
-      [
-        "Медийных кампаний",
-        number(
-          s.display_campaigns
-        )
-      ],
-      [
-        "Frequency ≥ 5",
-        number(
-          s.high_frequency_campaigns
-        )
-      ],
-      [
-        "Видео-строк",
-        number(
-          s.video_campaign_rows
-        )
-      ],
-      [
-        "Период",
-        `${
-          DATA
-            .meta
-            ?.period_days
-          || 60
-        } дней`
-      ]
-    ])
-    +
-    table(
-      [
-        "Кампания",
-        "Reach",
-        "Frequency",
-        "CPM",
-        "25%",
-        "50%",
-        "75%",
-        "100%",
-        "Cost complete",
-        "Расход"
-      ],
-      rows
-        .map(
-          x => `
-
-            <tr>
-
-              <td>
-                <strong>
-                  ${
-                    esc(
-                      x.campaign_name
-                      ||
-                      x.campaign_id
-                    )
-                  }
-                </strong>
-              </td>
-
-              <td>
-                ${number(x.reach)}
-              </td>
-
-              <td>
-                ${decimal(x.avg_frequency)}
-              </td>
-
-              <td>
-                ${
-                  x.avg_cpm
-                    ? money(
-                        x.avg_cpm
-                      )
-                    : "—"
-                }
-              </td>
-
-              <td>
-                ${
-                  x.video_views
-                    ? pct(
-                        x.video_25_rate
-                      )
-                    : "—"
-                }
-              </td>
-
-              <td>
-                ${
-                  x.video_views
-                    ? pct(
-                        x.video_50_rate
-                      )
-                    : "—"
-                }
-              </td>
-
-              <td>
-                ${
-                  x.video_views
-                    ? pct(
-                        x.video_75_rate
-                      )
-                    : "—"
-                }
-              </td>
-
-              <td>
-                ${
-                  x.video_views
-                    ? pct(
-                        x.video_100_rate
-                      )
-                    : "—"
-                }
-              </td>
-
-              <td>
-                ${
-                  x.avg_complete_cost
-                    ? money(
-                        x.avg_complete_cost
-                      )
-                    : "—"
-                }
-              </td>
-
-              <td>
-                ${money(x.cost)}
-              </td>
-
-            </tr>
-
-          `
-        )
-        .join("")
-    );
-}
-
-/* ============================== RETARGETING ============================== */
-
-function renderRetargeting() {
-  const box =
-    document.getElementById(
-      "retargetingBody"
-    );
-
-  if (!box) {
-    return;
-  }
-
-  const data =
-    DATA.retargeting
-    || {};
-
-  const rows =
-    data.rows
-    || [];
-
-  const s =
-    data.summary
-    || {};
-
-  if (!rows.length) {
-
-    box.innerHTML =
-      moduleEmpty(
-        "Условия ретаргетинга не найдены или модуль недоступен."
-      );
-
-    return;
-  }
-
-  box.innerHTML =
-    kpiGrid([
-      [
-        "Условий",
-        number(
-          s.lists
-        )
-      ],
-      [
-        "Доступно",
-        number(
-          s.available
-        )
-      ],
-      [
-        "Недоступно",
-        number(
-          s.unavailable
-        )
-      ],
-      [
-        "Окно ≥ 365 дней",
-        number(
-          s.long_windows
-        )
-      ]
-    ])
-    +
-    table(
-      [
-        "Условие",
-        "Тип",
-        "Доступность",
-        "Правил",
-        "Целей/сегментов",
-        "Макс. окно",
-        "Scope"
-      ],
-      rows
-        .map(
-          x => `
-
-            <tr>
-
-              <td>
-                <strong>
-                  ${esc(x.name)}
-                </strong>
-              </td>
-
-              <td>
-                ${esc(x.type)}
-              </td>
-
-              <td>
-                ${
-                  x.status
-                  === "healthy"
-                    ? "🟢 Доступно"
-                    : "🔴 Недоступно"
-                }
-              </td>
-
-              <td>
-                ${number(x.rule_count)}
-              </td>
-
-              <td>
-                ${number(x.goal_segment_count)}
-              </td>
-
-              <td>
-                ${
-                  x.max_membership_days
-                    ? `${
-                        number(
-                          x.max_membership_days
-                        )
-                      } дн.`
-                    : "—"
-                }
-              </td>
-
-              <td>
-                ${
-                  esc(
-                    x.scope
-                    ||
-                    "—"
-                  )
-                }
               </td>
 
             </tr>
@@ -4563,73 +5231,53 @@ const TITLES = {
 
   overview: [
     "Обзор рекламы",
-    "Сводка и автоматические сигналы из нескольких разрезов Yandex Direct API."
+    "Сводка и автоматические сигналы из нескольких разрезов Yandex Direct API.",
   ],
 
   alerts: [
     "Аномалии",
-    "События и потери, которые требуют ручной проверки."
+    "События и потери, которые требуют ручной проверки.",
   ],
 
   budget: [
     "Budget Optimizer",
-    "Анализ расходов, трафика, конверсий и стоимости результата."
+    "Анализ расходов и трёх типов конверсий.",
   ],
 
   creatives: [
     "Creative Intelligence",
-    "Какие именно визуалы работают лучше остальных."
+    "Какие именно визуалы работают лучше остальных.",
   ],
 
   keywords: [
     "Ключевые фразы",
-    "Эффективность заданной рекламной семантики."
+    "Order, вебинары и опросы по рекламной семантике.",
   ],
 
   queries: [
     "Search Query Intelligence",
-    "Реальные запросы пользователей и рекомендации по семантике."
+    "Реальные запросы пользователей и рекомендации по семантике.",
   ],
 
   placements: [
     "Placement Intelligence",
-    "Качество и результативность площадок РСЯ."
+    "Качество и результативность площадок РСЯ.",
   ],
 
   audience: [
     "Audience Intelligence",
-    "Сегменты аудитории и кандидаты на корректировки."
+    "Фильтры возраста, пола, платежеспособности и устройства.",
   ],
 
   geo: [
     "Geo Intelligence",
-    "Фактическое местоположение пользователей против таргетинга."
+    "Фактическое местоположение пользователей против таргетинга.",
   ],
 
   positions: [
     "Search Position Economics",
-    "Цена и эффективность поисковых позиций."
+    "Цена и эффективность поисковых размещений.",
   ],
-
-  attribution: [
-    "Attribution Lab",
-    "Устойчивость результата к модели атрибуции."
-  ],
-
-  goals: [
-    "Goal Intelligence",
-    "Результат по priority goals кампаний."
-  ],
-
-  media: [
-    "Media Intelligence",
-    "Охват, частота и удержание видео."
-  ],
-
-  retargeting: [
-    "Retargeting Health",
-    "Доступность условий ретаргетинга и сегментов."
-  ]
 };
 
 function showSection(
@@ -4641,10 +5289,12 @@ function showSection(
       ".section"
     )
     .forEach(
-      s =>
+      s => {
+
         s.classList.remove(
           "active"
-        )
+        );
+      }
     );
 
   document
@@ -4675,7 +5325,9 @@ function showSection(
       id
     ];
 
-  if (title) {
+  if (
+    title
+  ) {
 
     const h =
       document.getElementById(
@@ -4687,13 +5339,17 @@ function showSection(
         "pageSubtitle"
       );
 
-    if (h) {
+    if (
+      h
+    ) {
 
       h.textContent =
         title[0];
     }
 
-    if (p) {
+    if (
+      p
+    ) {
 
       p.textContent =
         title[1];
@@ -4710,7 +5366,9 @@ document.addEventListener(
         ".nav[data-section]"
       );
 
-    if (nav) {
+    if (
+      nav
+    ) {
 
       showSection(
         nav.dataset.section
@@ -4724,7 +5382,9 @@ document.addEventListener(
         "[data-goto]"
       );
 
-    if (goto) {
+    if (
+      goto
+    ) {
 
       showSection(
         goto.dataset.goto
@@ -4738,13 +5398,104 @@ document.addEventListener(
         "#alertFilters [data-filter]"
       );
 
-    if (filter) {
+    if (
+      filter
+    ) {
 
       ALERT_FILTER =
         filter.dataset.filter
         || "all";
 
       renderAlerts();
+
+      return;
+    }
+
+    const audienceFilter =
+      e.target.closest(
+        "[data-audience-filter][data-audience-value]"
+      );
+
+    if (
+      audienceFilter
+    ) {
+
+      const field =
+        audienceFilter
+          .dataset
+          .audienceFilter;
+
+      const value =
+        audienceFilter
+          .dataset
+          .audienceValue;
+
+      const set =
+        AUDIENCE_FILTERS[
+          field
+        ];
+
+      if (
+        set
+      ) {
+
+        if (
+          set.has(
+            value
+          )
+        ) {
+
+          set.delete(
+            value
+          );
+
+        } else {
+
+          set.add(
+            value
+          );
+        }
+
+        renderAudience();
+      }
+
+      return;
+    }
+
+    if (
+      e.target.closest(
+        "#audienceResetFilters"
+      )
+    ) {
+
+      Object.values(
+        AUDIENCE_FILTERS
+      )
+        .forEach(
+          set =>
+            set.clear()
+        );
+
+      renderAudience();
+    }
+  }
+);
+
+document.addEventListener(
+  "change",
+  e => {
+
+    if (
+      e.target
+      ?.id
+      === "audienceMetricSelect"
+    ) {
+
+      AUDIENCE_METRIC =
+        e.target.value
+        || "cost";
+
+      renderAudience();
     }
   }
 );
@@ -4757,7 +5508,9 @@ document
     "change",
     () => {
 
-      if (!DATA) {
+      if (
+        !DATA
+      ) {
         return;
       }
 
@@ -4782,7 +5535,9 @@ document
           "marketingRadarPassword"
         );
 
-      if (!password) {
+      if (
+        !password
+      ) {
         return;
       }
 
@@ -4809,7 +5564,9 @@ document
 
       } catch (error) {
 
-        console.error(error);
+        console.error(
+          error
+        );
 
         alert(
           "Не удалось обновить данные."
@@ -4832,7 +5589,9 @@ function formatDate(
   value
 ) {
 
-  if (!value) {
+  if (
+    !value
+  ) {
     return "—";
   }
 
