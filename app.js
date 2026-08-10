@@ -3,26 +3,39 @@ let DATA = null;
 const fmt =
   new Intl.NumberFormat("ru-RU");
 
-const money = (v) =>
+
+const money = value =>
   `${fmt.format(
-    Math.round(Number(v || 0))
+    Math.round(
+      Number(value || 0)
+    )
   )} ₽`;
 
-const number = (v) =>
+
+const number = value =>
   fmt.format(
-    Math.round(Number(v || 0))
+    Math.round(
+      Number(value || 0)
+    )
   );
 
-const pct = (v) =>
-  `${Number(v || 0).toFixed(2)}%`;
+
+const pct = value =>
+  `${Number(
+    value || 0
+  ).toFixed(2)}%`;
 
 
 /* =========================================================
    CRYPTO
 ========================================================= */
 
-function base64ToBytes(base64) {
-  const binary = atob(base64);
+function base64ToBytes(
+  base64
+) {
+
+  const binary =
+    atob(base64);
 
   const bytes =
     new Uint8Array(
@@ -34,6 +47,7 @@ function base64ToBytes(base64) {
     i < binary.length;
     i++
   ) {
+
     bytes[i] =
       binary.charCodeAt(i);
   }
@@ -47,19 +61,20 @@ async function deriveKey(
   salt,
   iterations
 ) {
-  const encoder =
-    new TextEncoder();
 
-  const keyMaterial =
+  const material =
     await crypto.subtle.importKey(
       "raw",
-      encoder.encode(password),
+      new TextEncoder().encode(
+        password
+      ),
       "PBKDF2",
       false,
       ["deriveKey"]
     );
 
   return crypto.subtle.deriveKey(
+
     {
       name: "PBKDF2",
       salt,
@@ -67,7 +82,7 @@ async function deriveKey(
       hash: "SHA-256",
     },
 
-    keyMaterial,
+    material,
 
     {
       name: "AES-GCM",
@@ -85,6 +100,7 @@ async function decryptPayload(
   payload,
   password
 ) {
+
   const salt =
     base64ToBytes(
       payload.salt
@@ -128,12 +144,14 @@ async function decryptPayload(
 async function loadEncryptedReport(
   password
 ) {
+
   const response =
     await fetch(
       `data/report.enc?t=${Date.now()}`
     );
 
   if (!response.ok) {
+
     throw new Error(
       `HTTP ${response.status}`
     );
@@ -154,6 +172,7 @@ async function loadEncryptedReport(
 ========================================================= */
 
 function showLogin() {
+
   document.body.insertAdjacentHTML(
     "beforeend",
     `
@@ -170,37 +189,41 @@ function showLogin() {
         padding:24px;
       "
     >
-      <div style="
-        width:100%;
-        max-width:400px;
-        padding:32px;
-        border:1px solid #20354e;
-        border-radius:18px;
-        background:#0e1c2e;
-      ">
 
-        <div style="
-          font-size:11px;
-          letter-spacing:.12em;
-          color:#5aa7ff;
-          margin-bottom:10px;
-        ">
+      <div
+        style="
+          width:100%;
+          max-width:400px;
+          padding:32px;
+          border:1px solid #20354e;
+          border-radius:18px;
+          background:#0e1c2e;
+        "
+      >
+
+        <div
+          style="
+            font-size:11px;
+            letter-spacing:.12em;
+            color:#5aa7ff;
+            margin-bottom:10px;
+          "
+        >
           MARKETING RADAR
         </div>
 
-        <h2 style="
-          margin:0 0 8px;
-        ">
+        <h2>
           Доступ к аналитике
         </h2>
 
-        <p style="
-          color:#8ea2bb;
-          font-size:13px;
-          line-height:1.5;
-        ">
-          Введите пароль для
-          расшифровки рекламных данных.
+        <p
+          style="
+            color:#8ea2bb;
+            font-size:13px;
+          "
+        >
+          Введите пароль
+          для расшифровки данных.
         </p>
 
         <input
@@ -214,16 +237,16 @@ function showLogin() {
             border:1px solid #20354e;
             background:#091525;
             color:white;
-            margin-top:12px;
+            margin-top:10px;
           "
         >
 
         <div
           id="loginError"
           style="
+            min-height:18px;
             color:#ff6b72;
             font-size:11px;
-            min-height:18px;
             margin-top:8px;
           "
         ></div>
@@ -233,19 +256,20 @@ function showLogin() {
           style="
             width:100%;
             padding:13px;
-            margin-top:8px;
             border:0;
             border-radius:9px;
             background:#3e9df8;
             color:white;
             font-weight:600;
             cursor:pointer;
+            margin-top:8px;
           "
         >
           Войти
         </button>
 
       </div>
+
     </div>
     `
   );
@@ -260,7 +284,9 @@ function showLogin() {
       "loginButton"
     );
 
+
   async function login() {
+
     const password =
       input.value;
 
@@ -274,6 +300,7 @@ function showLogin() {
       "Расшифровка...";
 
     try {
+
       DATA =
         await loadEncryptedReport(
           password
@@ -310,17 +337,21 @@ function showLogin() {
     }
   }
 
+
   button.addEventListener(
     "click",
     login
   );
 
+
   input.addEventListener(
     "keydown",
     event => {
+
       if (
         event.key === "Enter"
       ) {
+
         login();
       }
     }
@@ -331,13 +362,16 @@ function showLogin() {
 
 
 async function start() {
+
   const password =
     sessionStorage.getItem(
       "marketingRadarPassword"
     );
 
   if (password) {
+
     try {
+
       DATA =
         await loadEncryptedReport(
           password
@@ -348,6 +382,7 @@ async function start() {
       return;
 
     } catch {
+
       sessionStorage.removeItem(
         "marketingRadarPassword"
       );
@@ -363,12 +398,19 @@ async function start() {
 ========================================================= */
 
 function render() {
+
   renderMeta();
+
   renderHero();
+
   renderKPIs();
+
   renderCampaignTable();
+
   renderDirectSummary();
+
   renderCreativeSummary();
+
   renderCreatives();
 }
 
@@ -378,6 +420,7 @@ function render() {
 ========================================================= */
 
 function renderMeta() {
+
   const updated =
     formatDate(
       DATA.meta?.updated_at
@@ -399,6 +442,7 @@ function renderMeta() {
   }
 
   if (footer) {
+
     footer.textContent =
       `Обновлено ${updated}`;
   }
@@ -419,20 +463,30 @@ function renderMeta() {
 ========================================================= */
 
 function renderHero() {
+
   const s =
     DATA.summary || {};
+
+  const creatives =
+    DATA.creative_summary || {};
 
   document.getElementById(
     "heroHeadline"
   ).textContent =
-    "Данные Яндекс Директа обновлены";
+    "Marketing Radar работает";
 
   document.getElementById(
     "heroCopy"
   ).textContent =
-    `${DATA.campaigns?.length || 0} кампаний, ` +
-    `${number(s.clicks)} кликов, ` +
-    `${money(s.spend)} расходов`;
+    `${number(
+      creatives.total
+    )} визуальных креативов · ` +
+    `${money(
+      s.spend
+    )} расходов · ` +
+    `${number(
+      s.clicks
+    )} кликов`;
 
   document.getElementById(
     "healthScore"
@@ -446,10 +500,12 @@ function renderHero() {
 ========================================================= */
 
 function renderKPIs() {
+
   const s =
     DATA.summary || {};
 
   const items = [
+
     [
       "Расход",
       money(s.spend)
@@ -471,15 +527,20 @@ function renderKPIs() {
 
     [
       "CTR",
-      pct(s.ctr)
+      pct(
+        s.ctr
+      )
     ],
   ];
+
 
   document.getElementById(
     "kpis"
   ).innerHTML =
+
     items.map(
       ([label, value]) => `
+
         <div class="kpi">
 
           <div class="label">
@@ -490,11 +551,14 @@ function renderKPIs() {
             ${value}
           </div>
 
-          <div class="delta neutral">
-            за выбранный период
+          <div
+            class="delta neutral"
+          >
+            за 60 дней
           </div>
 
         </div>
+
       `
     ).join("");
 }
@@ -505,6 +569,7 @@ function renderKPIs() {
 ========================================================= */
 
 function renderCampaignTable() {
+
   const campaigns =
     [...(
       DATA.campaigns || []
@@ -515,69 +580,93 @@ function renderCampaignTable() {
       b.spend - a.spend
   );
 
+
   document.getElementById(
     "campaignTable"
   ).innerHTML = `
+
     <table class="table">
 
       <thead>
+
         <tr>
-          <th>Кампания</th>
-          <th>Расход</th>
-          <th>Показы</th>
-          <th>Клики</th>
-          <th>CTR</th>
-          <th>CPC</th>
+
+          <th>
+            Кампания
+          </th>
+
+          <th>
+            Расход
+          </th>
+
+          <th>
+            Показы
+          </th>
+
+          <th>
+            Клики
+          </th>
+
+          <th>
+            CTR
+          </th>
+
+          <th>
+            CPC
+          </th>
+
         </tr>
+
       </thead>
+
 
       <tbody>
 
-        ${
-          campaigns.map(
-            c => `
-              <tr>
+        ${campaigns.map(
+          campaign => `
 
-                <td>
-                  ${escapeHtml(
-                    c.name
-                  )}
-                </td>
+            <tr>
 
-                <td>
-                  ${money(
-                    c.spend
-                  )}
-                </td>
+              <td>
+                ${escapeHtml(
+                  campaign.name
+                )}
+              </td>
 
-                <td>
-                  ${number(
-                    c.impressions
-                  )}
-                </td>
+              <td>
+                ${money(
+                  campaign.spend
+                )}
+              </td>
 
-                <td>
-                  ${number(
-                    c.clicks
-                  )}
-                </td>
+              <td>
+                ${number(
+                  campaign.impressions
+                )}
+              </td>
 
-                <td>
-                  ${pct(
-                    c.ctr
-                  )}
-                </td>
+              <td>
+                ${number(
+                  campaign.clicks
+                )}
+              </td>
 
-                <td>
-                  ${money(
-                    c.avg_cpc
-                  )}
-                </td>
+              <td>
+                ${pct(
+                  campaign.ctr
+                )}
+              </td>
 
-              </tr>
-            `
-          ).join("")
-        }
+              <td>
+                ${money(
+                  campaign.avg_cpc
+                )}
+              </td>
+
+            </tr>
+
+          `
+        ).join("")}
 
       </tbody>
 
@@ -587,10 +676,11 @@ function renderCampaignTable() {
 
 
 /* =========================================================
-   DIRECT SUMMARY
+   RIGHT SUMMARY
 ========================================================= */
 
 function renderDirectSummary() {
+
   const campaigns =
     [...(
       DATA.campaigns || []
@@ -601,26 +691,38 @@ function renderDirectSummary() {
       .slice()
       .sort(
         (a, b) =>
-          b.spend - a.spend
+          b.spend
+          - a.spend
       )[0];
+
 
   const bestCtr =
     campaigns
       .slice()
       .sort(
         (a, b) =>
-          b.ctr - a.ctr
+          b.ctr
+          - a.ctr
       )[0];
+
 
   const container =
     document.getElementById(
       "budgetPreview"
     );
 
+
+  if (!container) {
+    return;
+  }
+
+
   container.innerHTML = `
+
     <div class="budget-item">
 
       <div>
+
         <strong>
           Средний CPC
         </strong>
@@ -628,6 +730,7 @@ function renderDirectSummary() {
         <small>
           По всем кампаниям
         </small>
+
       </div>
 
       <strong>
@@ -638,12 +741,15 @@ function renderDirectSummary() {
 
     </div>
 
+
     ${
       highestSpend
         ? `
+
           <div class="budget-item">
 
             <div>
+
               <strong>
                 Максимальный расход
               </strong>
@@ -653,6 +759,7 @@ function renderDirectSummary() {
                   highestSpend.name
                 )}
               </small>
+
             </div>
 
             <strong>
@@ -662,16 +769,20 @@ function renderDirectSummary() {
             </strong>
 
           </div>
+
         `
         : ""
     }
 
+
     ${
       bestCtr
         ? `
+
           <div class="budget-item">
 
             <div>
+
               <strong>
                 Лучший CTR
               </strong>
@@ -681,6 +792,7 @@ function renderDirectSummary() {
                   bestCtr.name
                 )}
               </small>
+
             </div>
 
             <strong>
@@ -690,6 +802,7 @@ function renderDirectSummary() {
             </strong>
 
           </div>
+
         `
         : ""
     }
@@ -702,77 +815,83 @@ function renderDirectSummary() {
 ========================================================= */
 
 function renderCreativeSummary() {
-  const s =
+
+  const summary =
     DATA.creative_summary;
 
-  if (!s) {
+  if (!summary) {
     return;
   }
+
 
   const priority =
     document.getElementById(
       "priorityAlerts"
     );
 
-  if (!priority) {
-    return;
-  }
 
   priority.innerHTML = `
 
     <article
       class="alert-card opportunity"
     >
+
       <div class="severity">
-        Успешные
+        УСПЕШНЫЕ
       </div>
 
       <h4>
-        ${s.successful}
-        эффективных объявлений
+        ${summary.successful}
+        креативов
       </h4>
 
       <p>
         Score 70+ относительно
-        сопоставимых объявлений.
+        других визуалов
+        той же кампании.
       </p>
+
     </article>
 
 
     <article
       class="alert-card warning"
     >
+
       <div class="severity">
-        Выгорание
+        ВЫГОРАНИЕ
       </div>
 
       <h4>
-        ${s.fatigue}
-        объявлений выгорают
+        ${summary.fatigue}
+        креативов
       </h4>
 
       <p>
-        CTR падает одновременно
-        с ростом CPC.
+        CTR падает,
+        одновременно CPC растёт.
       </p>
+
     </article>
 
 
     <article
       class="alert-card critical"
     >
+
       <div class="severity">
-        Слабые
+        СЛАБЫЕ
       </div>
 
       <h4>
-        ${s.weak}
-        слабых объявлений
+        ${summary.weak}
+        креативов
       </h4>
 
       <p>
         Score ниже 45.
       </p>
+
     </article>
 
   `;
@@ -780,80 +899,281 @@ function renderCreativeSummary() {
 
 
 /* =========================================================
-   CREATIVES
+   CREATIVE CARDS
 ========================================================= */
 
 function renderCreatives() {
+
   const container =
     document.getElementById(
       "creativeGrid"
     );
 
-  if (!container) {
-    return;
+
+  const heading =
+    document.querySelector(
+      "#creatives h2"
+    );
+
+  const subtitle =
+    document.querySelector(
+      "#creatives .section-head p"
+    );
+
+
+  if (heading) {
+
+    heading.textContent =
+      "Creative Intelligence";
   }
+
+
+  if (subtitle) {
+
+    subtitle.textContent =
+      (
+        "Какие именно картинки "
+        + "и видео работают лучше."
+      );
+  }
+
 
   const creatives =
     DATA.creatives || [];
 
+
   if (!creatives.length) {
-    container.innerHTML =
-      `<div class="note">
-        Объявления не найдены.
-      </div>`;
+
+    container.innerHTML = `
+
+      <div class="note">
+        Визуальные креативы
+        не найдены.
+      </div>
+    `;
 
     return;
   }
 
+
   container.innerHTML =
-    creatives.map(
-      creativeCard
-    ).join("");
+    creatives
+      .map(
+        creativeCard
+      )
+      .join("");
 }
 
 
-function creativeCard(c) {
-  const status =
+function creativeCard(
+  creative
+) {
+
+  const state =
     creativeStatus(
-      c.status
+      creative.status
     );
 
+
   const score =
-    c.score === null
+    creative.score === null
+      || creative.score
+      === undefined
       ? "—"
-      : c.score;
+      : creative.score;
+
 
   const trend =
-    c.trend || {};
+    creative.trend || {};
+
+
+  const preview =
+    creative.preview_url
+    || creative.thumbnail_url
+    || creative.original_url
+    || null;
+
+
+  const shared =
+    creative.shared_ad_ids
+    || [];
+
+
+  const ads =
+    creative.ad_ids
+    || [];
+
+
+  const attributionNote =
+    creative.status
+      === "unattributable"
+
+      ? `
+        <div
+          style="
+            margin-top:12px;
+            padding:10px;
+            border-radius:8px;
+            background:#161b26;
+            font-size:10px;
+            line-height:1.5;
+            color:#aab9c9;
+          "
+        >
+          В объявлении несколько
+          визуалов. Яндекс отдаёт
+          общую статистику объявления,
+          поэтому определить победителя
+          нельзя.
+        </div>
+      `
+
+      : shared.length
+
+      ? `
+        <div
+          style="
+            margin-top:12px;
+            padding:10px;
+            border-radius:8px;
+            background:#161b26;
+            font-size:10px;
+            color:#aab9c9;
+          "
+        >
+          Часть показов этого креатива
+          исключена из Score, поскольку
+          она относится к объявлениям
+          с несколькими ассетами.
+        </div>
+      `
+
+      : "";
+
 
   return `
-    <article class="creative">
 
-      <div class="creative-head">
+    <article
+      class="creative"
+      style="
+        overflow:hidden;
+      "
+    >
+
+      ${
+        preview
+
+          ? `
+
+            <div
+              style="
+                width:100%;
+                aspect-ratio:16/10;
+                border-radius:10px;
+                overflow:hidden;
+                background:#07111f;
+                margin-bottom:16px;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+              "
+            >
+
+              <img
+                src="${escapeAttribute(
+                  preview
+                )}"
+                alt="Creative preview"
+                loading="lazy"
+                style="
+                  width:100%;
+                  height:100%;
+                  object-fit:contain;
+                "
+              >
+
+            </div>
+
+          `
+
+          : `
+
+            <div
+              style="
+                width:100%;
+                aspect-ratio:16/10;
+                border-radius:10px;
+                background:#07111f;
+                margin-bottom:16px;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                color:#567089;
+                font-size:11px;
+              "
+            >
+              Нет превью
+            </div>
+
+          `
+      }
+
+
+      <div
+        class="creative-head"
+      >
 
         <div>
+
           <div
             style="
-              font-size:10px;
-              color:#8ea2bb;
-              margin-bottom:5px;
+              font-size:9px;
+              color:#7990a8;
+              margin-bottom:4px;
             "
           >
-            AD ${escapeHtml(
-              c.ad_id
+            ${escapeHtml(
+              creative.kind
+              === "image"
+                ? "IMAGE"
+                : creative.kind
+                  === "video"
+                  ? "VIDEO"
+                  : "CREATIVE"
             )}
           </div>
 
+
           <h4>
-            ${escapeHtml(
-              c.campaign_name
-            )}
+            ${
+              escapeHtml(
+                creative.name
+                || (
+                  creative.kind
+                  === "image"
+
+                  ? (
+                    "Image "
+                    + shorten(
+                      creative.asset_id
+                    )
+                  )
+
+                  : (
+                    "Creative "
+                    + creative.asset_id
+                  )
+                )
+              )
+            }
           </h4>
+
         </div>
+
 
         <span
           class="fatigue"
-          title="Traffic Efficiency Score"
+          title="Creative Score"
         >
           ${score}
         </span>
@@ -864,12 +1184,13 @@ function creativeCard(c) {
       <div
         style="
           margin-top:8px;
-          font-size:11px;
+          font-size:10px;
           color:#8ea2bb;
+          line-height:1.45;
         "
       >
         ${escapeHtml(
-          c.ad_group_name
+          creative.campaign_name
         )}
       </div>
 
@@ -883,163 +1204,160 @@ function creativeCard(c) {
         "
       >
 
-        <span
-          style="
-            padding:5px 8px;
-            border-radius:7px;
-            background:#0a1726;
-            font-size:10px;
-          "
-        >
-          ${status.icon}
-          ${status.label}
-        </span>
+        ${pill(
+          state.icon
+          + " "
+          + state.label
+        )}
 
-        <span
-          style="
-            padding:5px 8px;
-            border-radius:7px;
-            background:#0a1726;
-            font-size:10px;
-          "
-        >
-          ${escapeHtml(
-            c.network
-          )}
-        </span>
+        ${pill(
+          creative.network
+        )}
 
-        <span
-          style="
-            padding:5px 8px;
-            border-radius:7px;
-            background:#0a1726;
-            font-size:10px;
-          "
-        >
-          ${escapeHtml(
-            c.format
-          )}
-        </span>
-
-      </div>
-
-
-      <div class="stats"
-        style="
-          margin-top:15px;
-        "
-      >
-
-        <div class="mini">
-          <span>CTR</span>
-
-          <strong>
-            ${pct(c.ctr)}
-          </strong>
-        </div>
-
-
-        <div class="mini">
-          <span>CPC</span>
-
-          <strong>
-            ${money(
-              c.avg_cpc
-            )}
-          </strong>
-        </div>
-
-
-        <div class="mini">
-          <span>Клики</span>
-
-          <strong>
-            ${number(
-              c.clicks
-            )}
-          </strong>
-        </div>
-
-
-        <div class="mini">
-          <span>Расход</span>
-
-          <strong>
-            ${money(
-              c.spend
-            )}
-          </strong>
-        </div>
+        ${pill(
+          creative.asset_type
+          || creative.kind
+        )}
 
       </div>
 
 
       <div
+        class="stats"
         style="
           margin-top:15px;
-          padding-top:13px;
+        "
+      >
+
+        ${miniStat(
+          "CTR",
+          pct(
+            creative.ctr
+          )
+        )}
+
+        ${miniStat(
+          "CPC",
+          money(
+            creative.avg_cpc
+          )
+        )}
+
+        ${miniStat(
+          "Клики",
+          number(
+            creative.clicks
+          )
+        )}
+
+        ${miniStat(
+          "Расход",
+          money(
+            creative.spend
+          )
+        )}
+
+      </div>
+
+
+      ${
+        creative.baseline_ctr
+        !== undefined
+
+        ? `
+
+          <div
+            style="
+              margin-top:14px;
+              padding-top:12px;
+              border-top:1px solid #20354e;
+              font-size:10px;
+            "
+          >
+
+            ${comparisonRow(
+              "CTR",
+              creative.ctr,
+              creative.baseline_ctr,
+              "%"
+            )}
+
+            ${comparisonRow(
+              "CPC",
+              creative.avg_cpc,
+              creative.baseline_cpc,
+              "₽"
+            )}
+
+          </div>
+
+        `
+
+        : ""
+      }
+
+
+      <div
+        style="
+          margin-top:14px;
+          padding-top:12px;
           border-top:1px solid #20354e;
         "
       >
 
-        <div
-          style="
-            display:flex;
-            justify-content:space-between;
-            font-size:11px;
-          "
-        >
-          <span
-            style="color:#8ea2bb"
-          >
-            CTR 7 дней
-          </span>
+        ${trendRow(
+          "CTR 7 дней",
+          trend.ctr_change,
+          false
+        )}
 
-          <strong>
-            ${signedPercent(
-              trend.ctr_change
-            )}
-          </strong>
-        </div>
-
-
-        <div
-          style="
-            display:flex;
-            justify-content:space-between;
-            margin-top:7px;
-            font-size:11px;
-          "
-        >
-          <span
-            style="color:#8ea2bb"
-          >
-            CPC 7 дней
-          </span>
-
-          <strong>
-            ${signedPercent(
-              trend.cpc_change
-            )}
-          </strong>
-        </div>
+        ${trendRow(
+          "CPC 7 дней",
+          trend.cpc_change,
+          true
+        )}
 
       </div>
 
 
       <p>
         ${escapeHtml(
-          c.reason
+          creative.reason
+          || ""
         )}
       </p>
+
+
+      <div
+        style="
+          margin-top:10px;
+          font-size:9px;
+          color:#667d95;
+        "
+      >
+        Используется в
+        ${ads.length}
+        объявлениях
+      </div>
+
+
+      ${attributionNote}
 
     </article>
   `;
 }
 
 
-function creativeStatus(status) {
-  const statuses = {
+/* =========================================================
+   UI HELPERS
+========================================================= */
+
+function creativeStatus(
+  status
+) {
+
+  const map = {
+
     successful: {
       icon: "🟢",
       label: "Успешный",
@@ -1047,7 +1365,7 @@ function creativeStatus(status) {
 
     normal: {
       icon: "🟡",
-      label: "Нормальный",
+      label: "Средний",
     },
 
     weak: {
@@ -1069,28 +1387,209 @@ function creativeStatus(status) {
       icon: "⚪",
       label: "Мало данных",
     },
+
+    no_peers: {
+      icon: "⚪",
+      label: "Не с чем сравнить",
+    },
+
+    unattributable: {
+      icon: "⚫",
+      label: "Нельзя определить",
+    },
   };
 
+
   return (
-    statuses[status]
-    || statuses.normal
+    map[status]
+    || map.normal
   );
 }
 
 
-function signedPercent(value) {
+function miniStat(
+  label,
+  value
+) {
+
+  return `
+
+    <div class="mini">
+
+      <span>
+        ${escapeHtml(label)}
+      </span>
+
+      <strong>
+        ${escapeHtml(value)}
+      </strong>
+
+    </div>
+  `;
+}
+
+
+function pill(text) {
+
+  return `
+
+    <span
+      style="
+        padding:5px 8px;
+        border-radius:7px;
+        background:#0a1726;
+        font-size:9px;
+      "
+    >
+      ${escapeHtml(text)}
+    </span>
+  `;
+}
+
+
+function trendRow(
+  title,
+  value,
+  inverse
+) {
+
   value =
     Number(value || 0);
 
-  const prefix =
-    value > 0
-      ? "+"
-      : "";
+
+  const good =
+    inverse
+      ? value < 0
+      : value > 0;
+
+
+  const bad =
+    inverse
+      ? value > 0
+      : value < 0;
+
+
+  const color =
+    good
+      ? "#52d39a"
+      : bad
+        ? "#ff6b72"
+        : "#8ea2bb";
+
+
+  return `
+
+    <div
+      style="
+        display:flex;
+        justify-content:space-between;
+        margin-top:6px;
+        font-size:10px;
+      "
+    >
+
+      <span
+        style="
+          color:#8ea2bb;
+        "
+      >
+        ${escapeHtml(title)}
+      </span>
+
+
+      <strong
+        style="
+          color:${color};
+        "
+      >
+        ${
+          value > 0
+            ? "+"
+            : ""
+        }${value.toFixed(1)}%
+      </strong>
+
+    </div>
+  `;
+}
+
+
+function comparisonRow(
+  label,
+  value,
+  baseline,
+  suffix
+) {
+
+  value =
+    Number(value || 0);
+
+  baseline =
+    Number(baseline || 0);
+
+
+  const difference =
+    baseline
+      ? (
+          (
+            value - baseline
+          )
+          / baseline
+          * 100
+        )
+      : 0;
+
+
+  return `
+
+    <div
+      style="
+        display:flex;
+        justify-content:space-between;
+        margin-top:6px;
+      "
+    >
+
+      <span
+        style="
+          color:#8ea2bb;
+        "
+      >
+        ${escapeHtml(label)}
+        vs медиана
+      </span>
+
+
+      <strong>
+        ${
+          value.toFixed(2)
+        }${suffix}
+        /
+        ${
+          baseline.toFixed(2)
+        }${suffix}
+      </strong>
+
+    </div>
+  `;
+}
+
+
+function shorten(
+  value
+) {
+
+  const text =
+    String(value || "");
+
+  if (text.length <= 12) {
+    return text;
+  }
 
   return (
-    prefix
-    + value.toFixed(1)
-    + "%"
+    text.slice(0, 6)
+    + "…"
+    + text.slice(-5)
   );
 }
 
@@ -1100,7 +1599,9 @@ function signedPercent(value) {
 ========================================================= */
 
 document
-  .querySelectorAll(".nav")
+  .querySelectorAll(
+    ".nav"
+  )
   .forEach(
     button => {
 
@@ -1111,10 +1612,8 @@ document
           showSection(
             button.dataset.section
           );
-
         }
       );
-
     }
   );
 
@@ -1133,75 +1632,124 @@ document
           showSection(
             button.dataset.goto
           );
-
         }
       );
-
     }
   );
 
 
-function showSection(id) {
+const refreshButton =
+  document.getElementById(
+    "refreshBtn"
+  );
+
+
+if (refreshButton) {
+
+  refreshButton.addEventListener(
+    "click",
+    async () => {
+
+      const password =
+        sessionStorage.getItem(
+          "marketingRadarPassword"
+        );
+
+      if (!password) {
+        return;
+      }
+
+      DATA =
+        await loadEncryptedReport(
+          password
+        );
+
+      render();
+    }
+  );
+}
+
+
+function showSection(
+  id
+) {
+
   document
     .querySelectorAll(
       ".section"
     )
     .forEach(
-      section =>
+      section => {
+
         section.classList.remove(
           "active"
-        )
+        );
+      }
     );
+
 
   document
     .querySelectorAll(
       ".nav"
     )
     .forEach(
-      button =>
+      button => {
+
         button.classList.toggle(
           "active",
           button.dataset.section
-            === id
-        )
+          === id
+        );
+      }
     );
+
 
   const target =
     document.getElementById(id);
 
+
   if (target) {
+
     target.classList.add(
       "active"
     );
   }
 
+
   const titles = {
+
     overview: [
       "Обзор рекламы",
-      "Актуальные показатели Яндекс Директа."
+      "Актуальные показатели Яндекс Директа.",
     ],
 
     alerts: [
       "Аномалии",
-      "Автоматический контроль отклонений."
+      "Автоматический контроль отклонений.",
     ],
 
     budget: [
       "Budget Optimizer",
-      "Анализ эффективности расходов."
+      "Анализ эффективности расходов.",
     ],
 
     creatives: [
       "Creative Intelligence",
-      "Какие объявления работают, а какие теряют эффективность."
+      (
+        "Какие именно визуалы "
+        + "работают лучше остальных."
+      ),
     ],
   };
 
+
   if (titles[id]) {
+
     document.getElementById(
       "pageTitle"
     ).textContent =
       titles[id][0];
+
 
     document.getElementById(
       "pageSubtitle"
@@ -1215,7 +1763,10 @@ function showSection(id) {
    UTILITIES
 ========================================================= */
 
-function formatDate(value) {
+function formatDate(
+  value
+) {
+
   if (!value) {
     return "—";
   }
@@ -1228,7 +1779,10 @@ function formatDate(value) {
 }
 
 
-function escapeHtml(value) {
+function escapeHtml(
+  value
+) {
+
   return String(
     value ?? ""
   )
@@ -1252,6 +1806,16 @@ function escapeHtml(value) {
       "'",
       "&#039;"
     );
+}
+
+
+function escapeAttribute(
+  value
+) {
+
+  return escapeHtml(
+    value
+  );
 }
 
 
