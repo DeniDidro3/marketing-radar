@@ -24,12 +24,20 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 TOKEN = os.environ["YANDEX_DIRECT_TOKEN"]
 REPORT_PASSWORD = os.environ["REPORT_PASSWORD"]
 
-DIRECT_REPORT_URL = (
+REPORTS_URL = (
     "https://api.direct.yandex.com/json/v501/reports"
 )
 
-DIRECT_API_BASE = (
-    "https://api.direct.yandex.com/json/v5"
+ADS_URL = (
+    "https://api.direct.yandex.com/json/v501/ads"
+)
+
+ADIMAGES_URL = (
+    "https://api.direct.yandex.com/json/v5/adimages"
+)
+
+CREATIVES_URL = (
+    "https://api.direct.yandex.com/json/v5/creatives"
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -38,18 +46,17 @@ OUT = ROOT / "data" / "report.enc"
 
 
 REPORT_DAYS = 60
-
 TREND_DAYS = 7
 
 MIN_CLICKS_FOR_SCORE = 15
-
+MIN_CLICKS_FOR_TREND = 5
 MIN_CLICKS_FOR_BASELINE = 5
 
 PBKDF2_ITERATIONS = 600_000
 
 
 # ============================================================
-# COMMON HELPERS
+# BASIC HELPERS
 # ============================================================
 
 def safe_float(value, default=0.0):
@@ -141,7 +148,10 @@ def percent_change(
     )
 
 
-def chunks(items, size):
+def chunks(
+    items,
+    size,
+):
 
     items = list(items)
 
@@ -150,82 +160,54 @@ def chunks(items, size):
         len(items),
         size,
     ):
+
         yield items[
             i:i + size
         ]
 
 
 # ============================================================
-# GENERIC DIRECT JSON API
+# REPORT NAME
 # ============================================================
 
-def direct_api(
-    service,
-    payload,
+def make_report_name(
+    prefix,
+    report_type,
+    fields,
+    date_from,
+    date_to,
 ):
 
-    url = (
-        f"{DIRECT_API_BASE}/{service}"
+    """
+    Яндекс требует уникальный ReportName
+    для разных параметров offline-отчёта.
+
+    При этом повторный запрос 201/202 должен
+    иметь ТОЧНО такое же имя.
+
+    Поэтому имя детерминированно зависит
+    от периода + типа + полей.
+    """
+
+    signature = json.dumps(
+        {
+            "type": report_type,
+            "fields": fields,
+            "from": str(date_from),
+            "to": str(date_to),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
     )
 
-    headers = {
-        "Authorization": (
-            f"Bearer {TOKEN}"
-        ),
-        "Accept-Language": "ru",
-        "Content-Type": (
-            "application/json; "
-            "charset=utf-8"
-        ),
-    }
+    short_hash = hashlib.sha1(
+        signature.encode("utf-8")
+    ).hexdigest()[:10]
 
-    response = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=120,
-    )
-
-    if response.status_code != 200:
-
-        print(
-            f"{service} API error:",
-            response.status_code,
-            flush=True,
-        )
-
-        print(
-            response.text,
-            flush=True,
-        )
-
-        raise RuntimeError(
-            f"{service} returned "
-            f"HTTP "
-            f"{response.status_code}"
-        )
-
-    data = response.json()
-
-    if "error" in data:
-
-        print(
-            json.dumps(
-                data,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            flush=True,
-        )
-
-        raise RuntimeError(
-            f"Direct service "
-            f"{service} returned error"
-        )
-
-    return data.get(
-        "result",
-        {},
+    return (
+        f"{prefix} "
+        f"{date_to.strftime('%Y%m%d')} "
+        f"{short_hash}"
     )
 
 
@@ -234,16 +216,14 @@ def direct_api(
 # ============================================================
 
 def request_report(
-    report_name,
+    prefix,
     report_type,
     fields,
 ):
 
-    today = (
-        datetime.now(
-            timezone.utc
-        ).date()
-    )
+    today = datetime.now(
+        timezone.utc
+    ).date()
 
     date_from = (
         today
@@ -257,66 +237,82 @@ def request_report(
         - timedelta(days=1)
     )
 
+    report_name = make_report_name(
+        prefix,
+        report_type,
+        fields,
+        date_from,
+        date_to,
+    )
+
     headers = {
-        "Authorization": (
-            f"Bearer {TOKEN}"
-        ),
-        "Accept-Language": "ru",
-        "processingMode": "auto",
-        "returnMoneyInMicros": (
-            "false"
-        ),
-        "skipReportHeader": (
-            "true"
-        ),
-        "skipColumnHeader": (
-            "true"
-        ),
-        "skipReportSummary": (
-            "true"
-        ),
+
+        "Authorization":
+            f"Bearer {TOKEN}",
+
+        "Accept-Language":
+            "ru",
+
+        "processingMode":
+            "auto",
+
+        "returnMoneyInMicros":
+            "false",
+
+        "skipReportHeader":
+            "true",
+
+        "skipColumnHeader":
+            "true",
+
+        "skipReportSummary":
+            "true",
     }
 
     body = {
+
         "params": {
 
             "SelectionCriteria": {
-                "DateFrom": (
-                    date_from.isoformat()
-                ),
-                "DateTo": (
-                    date_to.isoformat()
-                ),
+
+                "DateFrom":
+                    date_from.isoformat(),
+
+                "DateTo":
+                    date_to.isoformat(),
             },
 
-            "FieldNames": fields,
+            "FieldNames":
+                fields,
 
             "OrderBy": [
+
                 {
-                    "Field": "Date",
-                    "SortOrder": (
-                        "ASCENDING"
-                    ),
+                    "Field":
+                        "Date",
+
+                    "SortOrder":
+                        "ASCENDING",
                 }
             ],
 
-            "ReportName": (
-                report_name
-            ),
+            "ReportName":
+                report_name,
 
-            "ReportType": (
-                report_type
-            ),
+            "ReportType":
+                report_type,
 
-            "DateRangeType": (
-                "CUSTOM_DATE"
-            ),
+            "DateRangeType":
+                "CUSTOM_DATE",
 
-            "Format": "TSV",
+            "Format":
+                "TSV",
 
-            "IncludeVAT": "YES",
+            "IncludeVAT":
+                "YES",
 
-            "IncludeDiscount": "YES",
+            "IncludeDiscount":
+                "YES",
         }
     }
 
@@ -334,7 +330,7 @@ def request_report(
         )
 
         response = requests.post(
-            DIRECT_REPORT_URL,
+            REPORTS_URL,
             headers=headers,
             json=body,
             timeout=120,
@@ -346,17 +342,36 @@ def request_report(
             flush=True,
         )
 
-        if (
-            response.status_code
-            == 200
-        ):
+        request_id = (
+            response.headers.get(
+                "RequestId"
+            )
+        )
+
+        if request_id:
 
             print(
-                f"{report_name} received",
+                "RequestId:",
+                request_id,
+                flush=True,
+            )
+
+        # ------------------------------------
+        # REPORT READY
+        # ------------------------------------
+
+        if response.status_code == 200:
+
+            print(
+                "Report ready.",
                 flush=True,
             )
 
             return response.text
+
+        # ------------------------------------
+        # OFFLINE REPORT
+        # ------------------------------------
 
         if response.status_code in (
             201,
@@ -372,8 +387,7 @@ def request_report(
             )
 
             print(
-                f"Waiting "
-                f"{retry_in}s...",
+                f"Waiting {retry_in}s...",
                 flush=True,
             )
 
@@ -382,6 +396,15 @@ def request_report(
             )
 
             continue
+
+        # ------------------------------------
+        # ERROR
+        # ------------------------------------
+
+        print(
+            "Reports API error:",
+            flush=True,
+        )
 
         print(
             response.text,
@@ -395,7 +418,7 @@ def request_report(
         )
 
     raise RuntimeError(
-        "Report generation timeout"
+        "Report generation timeout."
     )
 
 
@@ -406,23 +429,31 @@ def request_report(
 def get_campaign_rows():
 
     fields = [
+
         "Date",
+
         "CampaignId",
+
         "CampaignName",
+
         "Impressions",
+
         "Clicks",
+
         "Cost",
     ]
 
     text = request_report(
-        (
-            "Marketing Radar "
-            "Campaign Report"
+
+        prefix=(
+            "MR Campaign"
         ),
-        (
+
+        report_type=(
             "CAMPAIGN_PERFORMANCE_REPORT"
         ),
-        fields,
+
+        fields=fields,
     )
 
     reader = csv.reader(
@@ -434,11 +465,10 @@ def get_campaign_rows():
 
     for values in reader:
 
-        if (
-            not values
-            or len(values)
-            < len(fields)
-        ):
+        if not values:
+            continue
+
+        if len(values) < len(fields):
             continue
 
         row = dict(
@@ -451,60 +481,96 @@ def get_campaign_rows():
         rows.append({
 
             "date":
-                row["Date"],
+                row.get(
+                    "Date",
+                    "",
+                ),
 
             "campaign_id":
-                row["CampaignId"],
+                row.get(
+                    "CampaignId",
+                    "",
+                ),
 
             "campaign_name":
-                row["CampaignName"],
+                row.get(
+                    "CampaignName",
+                    "",
+                ),
 
             "impressions":
                 safe_int(
-                    row["Impressions"]
+                    row.get(
+                        "Impressions"
+                    )
                 ),
 
             "clicks":
                 safe_int(
-                    row["Clicks"]
+                    row.get(
+                        "Clicks"
+                    )
                 ),
 
             "cost":
                 safe_float(
-                    row["Cost"]
+                    row.get(
+                        "Cost"
+                    )
                 ),
         })
+
+    print(
+        "Campaign rows:",
+        len(rows),
+        flush=True,
+    )
 
     return rows
 
 
 # ============================================================
-# AD PERFORMANCE REPORT
+# AD PERFORMANCE
 # ============================================================
 
 def get_ad_rows():
 
     fields = [
+
         "Date",
+
         "CampaignId",
+
         "CampaignName",
+
         "AdGroupId",
+
         "AdGroupName",
+
         "AdId",
+
         "AdNetworkType",
+
         "AdFormat",
+
         "Impressions",
+
         "Clicks",
+
         "Cost",
     ]
 
     text = request_report(
-        (
-            "Marketing Radar "
-            "Asset Performance"
+
+        prefix=(
+            "MR Visual Assets"
         ),
-        "AD_PERFORMANCE_REPORT",
-        fields,
+
+        report_type=(
+            "AD_PERFORMANCE_REPORT"
+        ),
+
+        fields=fields,
     )
 
     reader = csv.reader(
@@ -516,11 +582,10 @@ def get_ad_rows():
 
     for values in reader:
 
-        if (
-            not values
-            or len(values)
-            < len(fields)
-        ):
+        if not values:
+            continue
+
+        if len(values) < len(fields):
             continue
 
         row = dict(
@@ -530,12 +595,12 @@ def get_ad_rows():
             )
         )
 
-        ad_id = (
+        ad_id = str(
             row.get(
                 "AdId",
                 "",
             )
-        )
+        ).strip()
 
         if ad_id in (
             "",
@@ -547,49 +612,74 @@ def get_ad_rows():
         rows.append({
 
             "date":
-                row["Date"],
+                row.get(
+                    "Date",
+                    "",
+                ),
 
             "campaign_id":
-                row["CampaignId"],
+                row.get(
+                    "CampaignId",
+                    "",
+                ),
 
             "campaign_name":
-                row["CampaignName"],
+                row.get(
+                    "CampaignName",
+                    "",
+                ),
 
             "ad_group_id":
-                row["AdGroupId"],
+                row.get(
+                    "AdGroupId",
+                    "",
+                ),
 
             "ad_group_name":
-                row["AdGroupName"],
+                row.get(
+                    "AdGroupName",
+                    "",
+                ),
 
             "ad_id":
                 ad_id,
 
             "network":
-                row[
-                    "AdNetworkType"
-                ],
+                row.get(
+                    "AdNetworkType",
+                    "UNKNOWN",
+                ),
 
             "ad_format":
-                row["AdFormat"],
+                row.get(
+                    "AdFormat",
+                    "UNKNOWN",
+                ),
 
             "impressions":
                 safe_int(
-                    row["Impressions"]
+                    row.get(
+                        "Impressions"
+                    )
                 ),
 
             "clicks":
                 safe_int(
-                    row["Clicks"]
+                    row.get(
+                        "Clicks"
+                    )
                 ),
 
             "cost":
                 safe_float(
-                    row["Cost"]
+                    row.get(
+                        "Cost"
+                    )
                 ),
         })
 
     print(
-        "Ad statistic rows:",
+        "Ad performance rows:",
         len(rows),
         flush=True,
     )
@@ -598,146 +688,288 @@ def get_ad_rows():
 
 
 # ============================================================
+# GENERIC JSON API CALL
+# ============================================================
+
+def direct_json_api(
+    url,
+    payload,
+    service_name,
+):
+
+    headers = {
+
+        "Authorization":
+            f"Bearer {TOKEN}",
+
+        "Accept-Language":
+            "ru",
+
+        "Content-Type":
+            "application/json; charset=utf-8",
+    }
+
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=120,
+    )
+
+    print(
+        f"{service_name}: "
+        f"HTTP "
+        f"{response.status_code}",
+        flush=True,
+    )
+
+    if response.status_code != 200:
+
+        print(
+            response.text,
+            flush=True,
+        )
+
+        raise RuntimeError(
+            f"{service_name}: HTTP "
+            f"{response.status_code}"
+        )
+
+    data = response.json()
+
+    if "error" in data:
+
+        print(
+            json.dumps(
+                data,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            flush=True,
+        )
+
+        raise RuntimeError(
+            f"{service_name}: "
+            f"API error"
+        )
+
+    return data.get(
+        "result",
+        {},
+    )
+
+
+# ============================================================
 # ADS.GET
 # ============================================================
 
-def get_ads(
-    ad_ids,
-):
+def get_ads(ad_ids):
 
-    result = {}
+    ads_by_id = {}
 
     numeric_ids = []
 
     for ad_id in ad_ids:
 
         try:
+
             numeric_ids.append(
                 int(ad_id)
             )
-        except Exception:
-            pass
 
+        except Exception:
+
+            continue
+
+    # Ads.get поддерживает до 10000 Id,
+    # но используем меньшие пачки.
     for id_chunk in chunks(
         numeric_ids,
-        5000,
+        3000,
     ):
+
+        print(
+            "Ads.get batch:",
+            len(id_chunk),
+            flush=True,
+        )
 
         payload = {
 
-            "method": "get",
+            "method":
+                "get",
 
             "params": {
 
                 "SelectionCriteria": {
-                    "Ids": id_chunk,
+
+                    "Ids":
+                        id_chunk,
                 },
 
                 "FieldNames": [
+
                     "Id",
+
                     "CampaignId",
+
                     "AdGroupId",
+
                     "Type",
+
                     "Subtype",
-                    "State",
-                    "Status",
                 ],
 
-                # Обычные Text & Image
+                # --------------------------------
+                # TEXT & IMAGE
+                # --------------------------------
+
                 "TextAdFieldNames": [
+
                     "AdImageHash",
+
                     "VideoExtension",
                 ],
 
-                # Динамические
+                # --------------------------------
+                # DYNAMIC
+                # --------------------------------
+
                 "DynamicTextAdFieldNames": [
+
                     "AdImageHash",
                 ],
 
-                # Mobile App
+                # --------------------------------
+                # MOBILE
+                # --------------------------------
+
                 "MobileAppAdFieldNames": [
+
                     "AdImageHash",
+
                     "VideoExtension",
                 ],
 
-                # Image Ad из картинки
+                # --------------------------------
+                # IMAGE ADS
+                # --------------------------------
+
                 "TextImageAdFieldNames": [
+
                     "AdImageHash",
                 ],
 
                 "MobileAppImageAdFieldNames": [
+
                     "AdImageHash",
                 ],
 
-                # Builder image creative
+                # --------------------------------
+                # IMAGE BUILDER
+                # --------------------------------
+
                 "TextAdBuilderAdFieldNames": [
+
                     "Creative",
                 ],
 
                 "MobileAppAdBuilderAdFieldNames": [
+
                     "Creative",
                 ],
 
-                # Video builders
+                # --------------------------------
+                # VIDEO BUILDER
+                # --------------------------------
+
                 "MobileAppCpcVideoAdBuilderAdFieldNames": [
+
                     "Creative",
                 ],
 
                 "CpcVideoAdBuilderAdFieldNames": [
+
                     "Creative",
                 ],
 
+                # --------------------------------
                 # CPM
+                # --------------------------------
+
                 "CpmBannerAdBuilderAdFieldNames": [
+
                     "Creative",
                 ],
 
                 "CpmVideoAdBuilderAdFieldNames": [
+
                     "Creative",
                 ],
 
-                # Smart
+                # --------------------------------
+                # SMART
+                # --------------------------------
+
                 "SmartAdBuilderAdFieldNames": [
+
                     "Creative",
                 ],
 
-                # Комбинаторные объявления
+                # --------------------------------
+                # RESPONSIVE / COMBINATORIAL
+                # --------------------------------
+
                 "ResponsiveAdFieldNames": [
+
                     "AdImages",
+
                     "VideoExtensions",
                 ],
 
                 "Page": {
-                    "Limit": 5000,
-                    "Offset": 0,
+
+                    "Limit":
+                        10000,
+
+                    "Offset":
+                        0,
                 },
             }
         }
 
-        api_result = direct_api(
-            "ads",
+        result = direct_json_api(
+            ADS_URL,
             payload,
+            "Ads.get",
         )
 
-        for ad in api_result.get(
+        for ad in result.get(
             "Ads",
             [],
         ):
-            result[
-                str(ad["Id"])
+
+            ad_id = str(
+                ad.get(
+                    "Id"
+                )
+            )
+
+            ads_by_id[
+                ad_id
             ] = ad
 
     print(
-        "Ads.get objects:",
-        len(result),
+        "Ads received:",
+        len(ads_by_id),
         flush=True,
     )
 
-    return result
+    return ads_by_id
 
 
 # ============================================================
-# EXTRACT VISUAL ASSETS FROM AD
+# ASSET BUILDERS
 # ============================================================
 
 def make_image_asset(
@@ -748,13 +980,23 @@ def make_image_asset(
     if not image_hash:
         return None
 
+    image_hash = str(
+        image_hash
+    )
+
     return {
-        "asset_key": (
-            f"image:{image_hash}"
-        ),
-        "asset_id": image_hash,
-        "kind": "image",
-        "source": source,
+
+        "asset_key":
+            f"image:{image_hash}",
+
+        "asset_id":
+            image_hash,
+
+        "kind":
+            "image",
+
+        "source":
+            source,
     }
 
 
@@ -767,51 +1009,54 @@ def make_creative_asset(
     if not creative:
         return None
 
-    creative_id = (
-        creative.get(
-            "CreativeId"
-        )
+    creative_id = creative.get(
+        "CreativeId"
     )
 
-    if not creative_id:
+    if creative_id is None:
         return None
+
+    creative_id = str(
+        creative_id
+    )
 
     return {
 
-        "asset_key": (
-            f"creative:"
-            f"{creative_id}"
-        ),
+        "asset_key":
+            f"creative:{creative_id}",
 
-        "asset_id": (
-            str(creative_id)
-        ),
+        "asset_id":
+            creative_id,
 
-        "kind": kind,
+        "kind":
+            kind,
 
-        "source": source,
+        "source":
+            source,
 
-        "preview_url": (
+        "preview_url":
             creative.get(
                 "PreviewUrl"
-            )
-        ),
+            ),
 
-        "thumbnail_url": (
+        "thumbnail_url":
             creative.get(
                 "ThumbnailUrl"
-            )
-        ),
+            ),
     }
 
+
+# ============================================================
+# EXTRACT ASSETS FROM AD
+# ============================================================
 
 def extract_ad_assets(ad):
 
     assets = []
 
-    # ----------------------------------------
-    # TEXT_AD
-    # ----------------------------------------
+    # ========================================================
+    # TEXT AD
+    # ========================================================
 
     text_ad = ad.get(
         "TextAd"
@@ -819,43 +1064,45 @@ def extract_ad_assets(ad):
 
     if text_ad:
 
-        image_hash = (
-            text_ad.get(
-                "AdImageHash"
+        image_asset = (
+            make_image_asset(
+
+                text_ad.get(
+                    "AdImageHash"
+                ),
+
+                "TextAd.AdImageHash",
             )
         )
 
-        asset = make_image_asset(
-            image_hash,
-            "TextAd.AdImageHash",
-        )
+        if image_asset:
 
-        if asset:
-            assets.append(asset)
-
-        video = (
-            text_ad.get(
-                "VideoExtension"
+            assets.append(
+                image_asset
             )
-        )
 
-        asset = (
+        video_asset = (
             make_creative_asset(
-                video,
-                "video",
-                (
-                    "TextAd."
+
+                text_ad.get(
                     "VideoExtension"
                 ),
+
+                "video",
+
+                "TextAd.VideoExtension",
             )
         )
 
-        if asset:
-            assets.append(asset)
+        if video_asset:
 
-    # ----------------------------------------
-    # DYNAMIC TEXT AD
-    # ----------------------------------------
+            assets.append(
+                video_asset
+            )
+
+    # ========================================================
+    # DYNAMIC TEXT
+    # ========================================================
 
     dynamic = ad.get(
         "DynamicTextAd"
@@ -864,9 +1111,11 @@ def extract_ad_assets(ad):
     if dynamic:
 
         asset = make_image_asset(
+
             dynamic.get(
                 "AdImageHash"
             ),
+
             (
                 "DynamicTextAd."
                 "AdImageHash"
@@ -874,11 +1123,14 @@ def extract_ad_assets(ad):
         )
 
         if asset:
-            assets.append(asset)
 
-    # ----------------------------------------
-    # MOBILE APP AD
-    # ----------------------------------------
+            assets.append(
+                asset
+            )
+
+    # ========================================================
+    # MOBILE APP
+    # ========================================================
 
     mobile = ad.get(
         "MobileAppAd"
@@ -887,9 +1139,11 @@ def extract_ad_assets(ad):
     if mobile:
 
         asset = make_image_asset(
+
             mobile.get(
                 "AdImageHash"
             ),
+
             (
                 "MobileAppAd."
                 "AdImageHash"
@@ -897,32 +1151,41 @@ def extract_ad_assets(ad):
         )
 
         if asset:
-            assets.append(asset)
 
-        asset = (
-            make_creative_asset(
-                mobile.get(
-                    "VideoExtension"
-                ),
-                "video",
-                (
-                    "MobileAppAd."
-                    "VideoExtension"
-                ),
+            assets.append(
+                asset
             )
+
+        asset = make_creative_asset(
+
+            mobile.get(
+                "VideoExtension"
+            ),
+
+            "video",
+
+            (
+                "MobileAppAd."
+                "VideoExtension"
+            ),
         )
 
         if asset:
-            assets.append(asset)
 
-    # ----------------------------------------
-    # IMAGE ADS FROM FILE
-    # ----------------------------------------
+            assets.append(
+                asset
+            )
 
-    for block_name in [
+    # ========================================================
+    # IMAGE ADS
+    # ========================================================
+
+    for block_name in (
+
         "TextImageAd",
+
         "MobileAppImageAd",
-    ]:
+    ):
 
         block = ad.get(
             block_name
@@ -932,9 +1195,11 @@ def extract_ad_assets(ad):
             continue
 
         asset = make_image_asset(
+
             block.get(
                 "AdImageHash"
             ),
+
             (
                 f"{block_name}."
                 f"AdImageHash"
@@ -942,17 +1207,23 @@ def extract_ad_assets(ad):
         )
 
         if asset:
-            assets.append(asset)
 
-    # ----------------------------------------
-    # BUILDER IMAGE CREATIVE
-    # ----------------------------------------
+            assets.append(
+                asset
+            )
 
-    for block_name in [
+    # ========================================================
+    # IMAGE CREATIVE BUILDER
+    # ========================================================
+
+    for block_name in (
+
         "TextAdBuilderAd",
+
         "MobileAppAdBuilderAd",
+
         "CpmBannerAdBuilderAd",
-    ]:
+    ):
 
         block = ad.get(
             block_name
@@ -962,28 +1233,34 @@ def extract_ad_assets(ad):
             continue
 
         asset = make_creative_asset(
+
             block.get(
                 "Creative"
             ),
+
             "image",
-            (
-                f"{block_name}."
-                f"Creative"
-            ),
+
+            f"{block_name}.Creative",
         )
 
         if asset:
-            assets.append(asset)
 
-    # ----------------------------------------
-    # VIDEO CREATIVES
-    # ----------------------------------------
+            assets.append(
+                asset
+            )
 
-    for block_name in [
+    # ========================================================
+    # VIDEO CREATIVE BUILDER
+    # ========================================================
+
+    for block_name in (
+
         "MobileAppCpcVideoAdBuilderAd",
+
         "CpcVideoAdBuilderAd",
+
         "CpmVideoAdBuilderAd",
-    ]:
+    ):
 
         block = ad.get(
             block_name
@@ -993,22 +1270,25 @@ def extract_ad_assets(ad):
             continue
 
         asset = make_creative_asset(
+
             block.get(
                 "Creative"
             ),
+
             "video",
-            (
-                f"{block_name}."
-                f"Creative"
-            ),
+
+            f"{block_name}.Creative",
         )
 
         if asset:
-            assets.append(asset)
 
-    # ----------------------------------------
-    # SMART
-    # ----------------------------------------
+            assets.append(
+                asset
+            )
+
+    # ========================================================
+    # SMART CREATIVE
+    # ========================================================
 
     smart = ad.get(
         "SmartAdBuilderAd"
@@ -1017,25 +1297,25 @@ def extract_ad_assets(ad):
     if smart:
 
         asset = make_creative_asset(
+
             smart.get(
                 "Creative"
             ),
+
             "smart",
-            (
-                "SmartAdBuilderAd."
-                "Creative"
-            ),
+
+            "SmartAdBuilderAd.Creative",
         )
 
         if asset:
-            assets.append(asset)
 
-    # ----------------------------------------
-    # RESPONSIVE AD
-    #
-    # Здесь может быть несколько изображений
-    # и несколько видео.
-    # ----------------------------------------
+            assets.append(
+                asset
+            )
+
+    # ========================================================
+    # RESPONSIVE
+    # ========================================================
 
     responsive = ad.get(
         "ResponsiveAd"
@@ -1043,24 +1323,32 @@ def extract_ad_assets(ad):
 
     if responsive:
 
-        images_block = (
+        # ------------------------------------
+        # IMAGES
+        # ------------------------------------
+
+        ad_images = (
             responsive.get(
                 "AdImages"
             )
             or {}
         )
 
-        for image in (
-            images_block.get(
+        image_items = (
+            ad_images.get(
                 "Items"
             )
             or []
-        ):
+        )
+
+        for image in image_items:
 
             asset = make_image_asset(
+
                 image.get(
                     "ImageHash"
                 ),
+
                 (
                     "ResponsiveAd."
                     "AdImages"
@@ -1068,39 +1356,52 @@ def extract_ad_assets(ad):
             )
 
             if asset:
-                assets.append(asset)
 
-        videos_block = (
+                assets.append(
+                    asset
+                )
+
+        # ------------------------------------
+        # VIDEOS
+        # ------------------------------------
+
+        video_extensions = (
             responsive.get(
                 "VideoExtensions"
             )
             or {}
         )
 
-        for video in (
-            videos_block.get(
+        video_items = (
+            video_extensions.get(
                 "Items"
             )
             or []
-        ):
+        )
 
-            asset = (
-                make_creative_asset(
-                    video,
-                    "video",
-                    (
-                        "ResponsiveAd."
-                        "VideoExtensions"
-                    ),
-                )
+        for video in video_items:
+
+            asset = make_creative_asset(
+
+                video,
+
+                "video",
+
+                (
+                    "ResponsiveAd."
+                    "VideoExtensions"
+                ),
             )
 
             if asset:
-                assets.append(asset)
 
-    # ----------------------------------------
+                assets.append(
+                    asset
+                )
+
+    # ========================================================
     # DEDUP
-    # ----------------------------------------
+    # ========================================================
 
     unique = {}
 
@@ -1116,7 +1417,7 @@ def extract_ad_assets(ad):
 
 
 # ============================================================
-# AD IMAGES METADATA
+# ADIMAGES.GET
 # ============================================================
 
 def get_adimage_metadata(
@@ -1124,6 +1425,12 @@ def get_adimage_metadata(
 ):
 
     metadata = {}
+
+    image_hashes = sorted(
+        set(
+            image_hashes
+        )
+    )
 
     for hash_chunk in chunks(
         image_hashes,
@@ -1133,37 +1440,60 @@ def get_adimage_metadata(
         if not hash_chunk:
             continue
 
+        print(
+            "AdImages.get batch:",
+            len(hash_chunk),
+            flush=True,
+        )
+
         payload = {
 
-            "method": "get",
+            "method":
+                "get",
 
             "params": {
 
                 "SelectionCriteria": {
+
                     "AdImageHashes":
                         hash_chunk,
                 },
 
                 "FieldNames": [
+
                     "AdImageHash",
+
                     "OriginalUrl",
+
                     "PreviewUrl",
+
                     "Name",
+
                     "Type",
+
                     "Subtype",
+
                     "Associated",
                 ],
 
                 "Page": {
-                    "Limit": 5000,
-                    "Offset": 0,
+
+                    "Limit":
+                        10000,
+
+                    "Offset":
+                        0,
                 },
             }
         }
 
-        result = direct_api(
-            "adimages",
+        result = direct_json_api(
+
+            ADIMAGES_URL,
+
             payload,
+
+            "AdImages.get",
         )
 
         for item in result.get(
@@ -1171,15 +1501,27 @@ def get_adimage_metadata(
             [],
         ):
 
+            image_hash = str(
+                item.get(
+                    "AdImageHash"
+                )
+            )
+
             metadata[
-                item["AdImageHash"]
+                image_hash
             ] = item
+
+    print(
+        "Image metadata:",
+        len(metadata),
+        flush=True,
+    )
 
     return metadata
 
 
 # ============================================================
-# CREATIVE METADATA
+# CREATIVES.GET
 # ============================================================
 
 def get_creative_metadata(
@@ -1188,59 +1530,90 @@ def get_creative_metadata(
 
     metadata = {}
 
-    numeric = []
+    numeric_ids = []
 
-    for creative_id in (
-        creative_ids
+    for creative_id in sorted(
+        set(
+            creative_ids
+        )
     ):
 
         try:
-            numeric.append(
+
+            numeric_ids.append(
                 int(creative_id)
             )
+
         except Exception:
-            pass
+
+            continue
 
     for id_chunk in chunks(
-        numeric,
+        numeric_ids,
         5000,
     ):
 
         if not id_chunk:
             continue
 
+        print(
+            "Creatives.get batch:",
+            len(id_chunk),
+            flush=True,
+        )
+
         payload = {
 
-            "method": "get",
+            "method":
+                "get",
 
             "params": {
 
                 "SelectionCriteria": {
-                    "Ids": id_chunk,
+
+                    "Ids":
+                        id_chunk,
                 },
 
                 "FieldNames": [
+
                     "Id",
+
                     "Type",
+
                     "Name",
+
                     "PreviewUrl",
+
                     "ThumbnailUrl",
+
                     "Width",
+
                     "Height",
+
                     "Associated",
+
                     "IsAdaptive",
                 ],
 
                 "Page": {
-                    "Limit": 5000,
-                    "Offset": 0,
+
+                    "Limit":
+                        10000,
+
+                    "Offset":
+                        0,
                 },
             }
         }
 
-        result = direct_api(
-            "creatives",
+        result = direct_json_api(
+
+            CREATIVES_URL,
+
             payload,
+
+            "Creatives.get",
         )
 
         for item in result.get(
@@ -1248,9 +1621,21 @@ def get_creative_metadata(
             [],
         ):
 
+            creative_id = str(
+                item.get(
+                    "Id"
+                )
+            )
+
             metadata[
-                str(item["Id"])
+                creative_id
             ] = item
+
+    print(
+        "Creative metadata:",
+        len(metadata),
+        flush=True,
+    )
 
     return metadata
 
@@ -1267,32 +1652,43 @@ def aggregate_campaigns(
 
     for row in rows:
 
-        cid = (
+        campaign_id = (
             row["campaign_id"]
         )
 
-        if not cid:
+        if not campaign_id:
             continue
 
-        if cid not in campaigns:
+        if (
+            campaign_id
+            not in campaigns
+        ):
 
-            campaigns[cid] = {
+            campaigns[
+                campaign_id
+            ] = {
 
-                "campaign_id": cid,
+                "campaign_id":
+                    campaign_id,
 
                 "name":
                     row[
                         "campaign_name"
                     ],
 
-                "impressions": 0,
+                "impressions":
+                    0,
 
-                "clicks": 0,
+                "clicks":
+                    0,
 
-                "spend": 0.0,
+                "spend":
+                    0.0,
             }
 
-        item = campaigns[cid]
+        item = campaigns[
+            campaign_id
+        ]
 
         item["impressions"] += (
             row["impressions"]
@@ -1308,9 +1704,7 @@ def aggregate_campaigns(
 
     result = []
 
-    for item in (
-        campaigns.values()
-    ):
+    for item in campaigns.values():
 
         impressions = (
             item["impressions"]
@@ -1332,8 +1726,9 @@ def aggregate_campaigns(
             else 0
         )
 
-        cpc = (
-            spend / clicks
+        avg_cpc = (
+            spend
+            / clicks
             if clicks
             else 0
         )
@@ -1356,14 +1751,14 @@ def aggregate_campaigns(
 
             "avg_cpc":
                 round(
-                    cpc,
+                    avg_cpc,
                     2,
                 ),
         })
 
     result.sort(
-        key=lambda x:
-            x["spend"],
+        key=lambda item:
+            item["spend"],
         reverse=True,
     )
 
@@ -1371,7 +1766,7 @@ def aggregate_campaigns(
 
 
 # ============================================================
-# WHICH ASSETS MATCH WHICH AD FORMAT?
+# MATCH AD FORMAT -> ASSET
 # ============================================================
 
 def assets_for_format(
@@ -1379,52 +1774,63 @@ def assets_for_format(
     ad_format,
 ):
 
-    ad_format = (
+    ad_format = str(
         ad_format
         or ""
     ).upper()
 
+    # IMAGE / ADAPTIVE_IMAGE
     if ad_format in (
         "IMAGE",
         "ADAPTIVE_IMAGE",
     ):
 
         return [
+
             asset
             for asset in assets
+
             if asset["kind"]
             == "image"
         ]
 
+    # VIDEO
     if ad_format == "VIDEO":
 
         return [
+
             asset
             for asset in assets
+
             if asset["kind"]
             == "video"
         ]
 
+    # SMART
     if ad_format in (
+
         "SMART_MULTIPLE",
+
         "SMART_SINGLE",
+
         "SMART_TILE",
     ):
 
         return [
+
             asset
             for asset in assets
+
             if asset["kind"]
             == "smart"
         ]
 
-    # TEXT-показы визуальному ассету
-    # не присваиваем.
+    # TEXT не приписываем визуалу.
     return []
 
 
 # ============================================================
-# BUILD ASSET PERFORMANCE
+# ASSET PERFORMANCE
 # ============================================================
 
 def build_asset_performance(
@@ -1434,14 +1840,21 @@ def build_asset_performance(
 
     performances = {}
 
-    def ensure_perf(
+    def ensure_item(
         asset,
         row,
     ):
 
+        # Один и тот же visual asset
+        # оцениваем отдельно в каждой кампании
+        # и сети.
+
         key = (
+
             asset["asset_key"],
+
             row["campaign_id"],
+
             row["network"],
         )
 
@@ -1450,16 +1863,24 @@ def build_asset_performance(
             performances[key] = {
 
                 "asset_key":
-                    asset["asset_key"],
+                    asset[
+                        "asset_key"
+                    ],
 
                 "asset_id":
-                    asset["asset_id"],
+                    asset[
+                        "asset_id"
+                    ],
 
                 "kind":
-                    asset["kind"],
+                    asset[
+                        "kind"
+                    ],
 
                 "source":
-                    asset["source"],
+                    asset.get(
+                        "source"
+                    ),
 
                 "campaign_id":
                     row[
@@ -1472,90 +1893,123 @@ def build_asset_performance(
                     ],
 
                 "network":
-                    row["network"],
+                    row[
+                        "network"
+                    ],
 
-                "impressions": 0,
+                "impressions":
+                    0,
 
-                "clicks": 0,
+                "clicks":
+                    0,
 
-                "spend": 0.0,
+                "spend":
+                    0.0,
 
-                "ad_ids": set(),
+                "ad_ids":
+                    set(),
 
-                "ad_group_ids": set(),
+                "ad_group_ids":
+                    set(),
 
-                "daily": [],
+                "daily":
+                    [],
 
-                # Статистика, которую нельзя
-                # распределить между несколькими
-                # ассетами.
-                "shared_impressions": 0,
+                # Статистика объявлений, где
+                # несколько визуальных ассетов
+                # одного типа и нельзя понять,
+                # какой из них получил результат.
 
-                "shared_clicks": 0,
+                "shared_impressions":
+                    0,
 
-                "shared_spend": 0.0,
+                "shared_clicks":
+                    0,
 
-                "shared_ad_ids": set(),
+                "shared_spend":
+                    0.0,
+
+                "shared_ad_ids":
+                    set(),
             }
 
-        return performances[key]
+        return performances[
+            key
+        ]
 
     for row in ad_rows:
 
+        ad_id = (
+            row["ad_id"]
+        )
+
         assets = (
             ad_asset_map.get(
-                row["ad_id"],
+                ad_id,
                 [],
             )
         )
 
-        matching = (
+        matching_assets = (
             assets_for_format(
+
                 assets,
-                row["ad_format"],
+
+                row[
+                    "ad_format"
+                ],
             )
         )
 
-        if not matching:
+        if not matching_assets:
             continue
 
         # ====================================================
-        # ТОЧНАЯ АТРИБУЦИЯ:
-        # в этом формате объявления только один ассет
+        # ТОЧНАЯ АТРИБУЦИЯ
         # ====================================================
 
-        if len(matching) == 1:
+        if len(
+            matching_assets
+        ) == 1:
 
-            asset = matching[0]
+            asset = (
+                matching_assets[0]
+            )
 
-            perf = ensure_perf(
+            item = ensure_item(
                 asset,
                 row,
             )
 
-            perf["impressions"] += (
+            item["impressions"] += (
                 row["impressions"]
             )
 
-            perf["clicks"] += (
+            item["clicks"] += (
                 row["clicks"]
             )
 
-            perf["spend"] += (
+            item["spend"] += (
                 row["cost"]
             )
 
-            perf["ad_ids"].add(
-                row["ad_id"]
+            item["ad_ids"].add(
+                ad_id
             )
 
-            perf[
-                "ad_group_ids"
-            ].add(
-                row["ad_group_id"]
-            )
+            if row[
+                "ad_group_id"
+            ]:
 
-            perf["daily"].append({
+                item[
+                    "ad_group_ids"
+                ].add(
+                    row[
+                        "ad_group_id"
+                    ]
+                )
+
+            item["daily"].append({
 
                 "date":
                     row["date"],
@@ -1566,69 +2020,86 @@ def build_asset_performance(
                     ],
 
                 "clicks":
-                    row["clicks"],
+                    row[
+                        "clicks"
+                    ],
 
                 "cost":
-                    row["cost"],
+                    row[
+                        "cost"
+                    ],
             })
 
         # ====================================================
-        # НЕВОЗМОЖНО ТОЧНО РАЗДЕЛИТЬ:
-        # responsive ad с несколькими картинками/видео
+        # НЕВОЗМОЖНАЯ АТРИБУЦИЯ
         # ====================================================
 
         else:
 
-            for asset in matching:
+            for asset in (
+                matching_assets
+            ):
 
-                perf = ensure_perf(
+                item = ensure_item(
                     asset,
                     row,
                 )
 
-                perf[
+                item[
                     "shared_impressions"
                 ] += (
-                    row["impressions"]
+                    row[
+                        "impressions"
+                    ]
                 )
 
-                perf[
+                item[
                     "shared_clicks"
                 ] += (
-                    row["clicks"]
+                    row[
+                        "clicks"
+                    ]
                 )
 
-                perf[
+                item[
                     "shared_spend"
                 ] += (
-                    row["cost"]
+                    row[
+                        "cost"
+                    ]
                 )
 
-                perf[
+                item[
                     "shared_ad_ids"
                 ].add(
-                    row["ad_id"]
+                    ad_id
                 )
 
     result = []
 
-    for perf in (
+    for item in (
         performances.values()
     ):
 
         impressions = (
-            perf["impressions"]
+            item[
+                "impressions"
+            ]
         )
 
         clicks = (
-            perf["clicks"]
+            item[
+                "clicks"
+            ]
         )
 
         spend = (
-            perf["spend"]
+            item[
+                "spend"
+            ]
         )
 
-        perf["ctr"] = (
+        ctr = (
             clicks
             / impressions
             * 100
@@ -1636,59 +2107,72 @@ def build_asset_performance(
             else 0
         )
 
-        perf["avg_cpc"] = (
-            spend / clicks
+        avg_cpc = (
+            spend
+            / clicks
             if clicks
             else 0
         )
 
-        perf["spend"] = round(
+        item["ctr"] = round(
+            ctr,
+            3,
+        )
+
+        item["avg_cpc"] = round(
+            avg_cpc,
+            2,
+        )
+
+        item["spend"] = round(
             spend,
             2,
         )
 
-        perf["ctr"] = round(
-            perf["ctr"],
-            3,
-        )
-
-        perf["avg_cpc"] = round(
-            perf["avg_cpc"],
-            2,
-        )
-
-        perf["shared_spend"] = round(
-            perf[
+        item[
+            "shared_spend"
+        ] = round(
+            item[
                 "shared_spend"
             ],
             2,
         )
 
-        perf["ad_ids"] = sorted(
-            perf["ad_ids"]
+        item["ad_ids"] = sorted(
+            item["ad_ids"]
         )
 
-        perf["ad_group_ids"] = sorted(
-            perf[
+        item[
+            "ad_group_ids"
+        ] = sorted(
+            item[
                 "ad_group_ids"
             ]
         )
 
-        perf[
+        item[
             "shared_ad_ids"
         ] = sorted(
-            perf[
+            item[
                 "shared_ad_ids"
             ]
         )
 
-        result.append(perf)
+        result.append(
+            item
+        )
+
+    print(
+        "Asset performance objects:",
+        len(result),
+        flush=True,
+    )
 
     return result
 
 
 # ============================================================
-# ADD PREVIEW / METADATA
+# METADATA ENRICHMENT
 # ============================================================
 
 def enrich_asset_metadata(
@@ -1698,139 +2182,167 @@ def enrich_asset_metadata(
     creative_metadata,
 ):
 
-    for perf in performances:
+    for item in performances:
 
-        asset = (
+        registry_item = (
             asset_registry.get(
-                perf["asset_key"],
+                item[
+                    "asset_key"
+                ],
                 {},
             )
         )
 
-        perf["preview_url"] = (
-            asset.get(
+        item["preview_url"] = (
+            registry_item.get(
                 "preview_url"
             )
         )
 
-        perf[
+        item[
             "thumbnail_url"
         ] = (
-            asset.get(
+            registry_item.get(
                 "thumbnail_url"
             )
         )
 
-        perf["name"] = None
+        item["original_url"] = None
 
-        perf["width"] = None
-        perf["height"] = None
+        item["name"] = None
 
-        perf["asset_type"] = (
-            perf["kind"]
+        item["width"] = None
+
+        item["height"] = None
+
+        item["asset_type"] = (
+            item["kind"]
         )
 
-        # ----------------------------------------
-        # ADIMAGE
-        # ----------------------------------------
+        item["subtype"] = None
 
-        if (
-            perf["asset_key"]
-            .startswith(
-                "image:"
-            )
+        # ====================================================
+        # IMAGE HASH
+        # ====================================================
+
+        if item[
+            "asset_key"
+        ].startswith(
+            "image:"
         ):
 
             meta = (
                 image_metadata.get(
-                    perf["asset_id"],
+                    item[
+                        "asset_id"
+                    ],
                     {},
                 )
             )
 
-            perf["name"] = (
-                meta.get("Name")
+            item["name"] = (
+                meta.get(
+                    "Name"
+                )
             )
 
-            perf["preview_url"] = (
+            item["preview_url"] = (
                 meta.get(
                     "PreviewUrl"
                 )
-                or perf[
+                or item[
                     "preview_url"
                 ]
             )
 
-            perf["original_url"] = (
+            item["original_url"] = (
                 meta.get(
                     "OriginalUrl"
                 )
             )
 
-            perf["asset_type"] = (
-                meta.get("Type")
+            item["asset_type"] = (
+                meta.get(
+                    "Type"
+                )
                 or "IMAGE"
             )
 
-            perf["subtype"] = (
+            item["subtype"] = (
                 meta.get(
                     "Subtype"
                 )
             )
 
-        # ----------------------------------------
+        # ====================================================
         # CREATIVE ID
-        # ----------------------------------------
+        # ====================================================
 
         else:
 
             meta = (
                 creative_metadata.get(
-                    perf["asset_id"],
+                    item[
+                        "asset_id"
+                    ],
                     {},
                 )
             )
 
-            perf["name"] = (
-                meta.get("Name")
+            item["name"] = (
+                meta.get(
+                    "Name"
+                )
             )
 
-            perf["preview_url"] = (
+            item["preview_url"] = (
+
                 meta.get(
                     "PreviewUrl"
                 )
-                or perf[
+
+                or item[
                     "preview_url"
                 ]
             )
 
-            perf[
+            item[
                 "thumbnail_url"
             ] = (
+
                 meta.get(
                     "ThumbnailUrl"
                 )
-                or perf[
+
+                or item[
                     "thumbnail_url"
                 ]
             )
 
-            perf["asset_type"] = (
-                meta.get("Type")
-                or perf["kind"]
+            item["asset_type"] = (
+                meta.get(
+                    "Type"
+                )
+                or item[
+                    "kind"
+                ]
             )
 
-            perf["width"] = (
-                meta.get("Width")
+            item["width"] = (
+                meta.get(
+                    "Width"
+                )
             )
 
-            perf["height"] = (
-                meta.get("Height")
+            item["height"] = (
+                meta.get(
+                    "Height"
+                )
             )
 
 
 # ============================================================
-# TREND
+# TREND PERIOD
 # ============================================================
 
 def period_stats(
@@ -1840,55 +2352,74 @@ def period_stats(
 ):
 
     impressions = 0
+
     clicks = 0
+
     spend = 0.0
 
     for row in rows:
 
         try:
-            day = (
+
+            row_date = (
                 datetime.strptime(
                     row["date"],
                     "%Y-%m-%d",
                 ).date()
             )
+
         except Exception:
+
             continue
 
         if not (
             start_date
-            <= day
+            <= row_date
             <= end_date
         ):
             continue
 
         impressions += (
-            row["impressions"]
+            row[
+                "impressions"
+            ]
         )
 
         clicks += (
-            row["clicks"]
+            row[
+                "clicks"
+            ]
         )
 
         spend += (
-            row["cost"]
+            row[
+                "cost"
+            ]
         )
 
     ctr = (
+
         clicks
         / impressions
         * 100
+
         if impressions
+
         else 0
     )
 
     cpc = (
-        spend / clicks
+
+        spend
+        / clicks
+
         if clicks
+
         else 0
     )
 
     return {
+
         "impressions":
             impressions,
 
@@ -1915,15 +2446,17 @@ def period_stats(
     }
 
 
+# ============================================================
+# TREND CALCULATION
+# ============================================================
+
 def calculate_trend(
-    perf,
+    item,
 ):
 
-    today = (
-        datetime.now(
-            timezone.utc
-        ).date()
-    )
+    today = datetime.now(
+        timezone.utc
+    ).date()
 
     current_end = (
         today
@@ -1950,36 +2483,60 @@ def calculate_trend(
     )
 
     current = period_stats(
-        perf["daily"],
+
+        item["daily"],
+
         current_start,
+
         current_end,
     )
 
     previous = period_stats(
-        perf["daily"],
+
+        item["daily"],
+
         previous_start,
+
         previous_end,
     )
 
     ctr_change = (
         percent_change(
-            current["ctr"],
-            previous["ctr"],
+
+            current[
+                "ctr"
+            ],
+
+            previous[
+                "ctr"
+            ],
         )
     )
 
     cpc_change = (
         percent_change(
-            current["cpc"],
-            previous["cpc"],
+
+            current[
+                "cpc"
+            ],
+
+            previous[
+                "cpc"
+            ],
         )
     )
 
     status = "stable"
 
     if (
-        current["clicks"] < 5
-        or previous["clicks"] < 5
+
+        current["clicks"]
+        < MIN_CLICKS_FOR_TREND
+
+        or
+
+        previous["clicks"]
+        < MIN_CLICKS_FOR_TREND
     ):
 
         status = (
@@ -1987,18 +2544,30 @@ def calculate_trend(
         )
 
     elif (
+
         ctr_change <= -20
-        and cpc_change >= 15
+
+        and
+
+        cpc_change >= 15
     ):
 
-        status = "fatigue"
+        status = (
+            "fatigue"
+        )
 
     elif (
+
         ctr_change >= 20
-        and cpc_change <= -10
+
+        and
+
+        cpc_change <= -10
     ):
 
-        status = "improving"
+        status = (
+            "improving"
+        )
 
     elif ctr_change <= -20:
 
@@ -2014,9 +2583,11 @@ def calculate_trend(
 
     return {
 
-        "current_7d": current,
+        "current_7d":
+            current,
 
-        "previous_7d": previous,
+        "previous_7d":
+            previous,
 
         "ctr_change":
             round(
@@ -2043,32 +2614,41 @@ def build_baselines(
     performances,
 ):
 
-    groups = defaultdict(list)
+    groups = defaultdict(
+        list
+    )
 
-    for perf in performances:
+    for item in performances:
 
         if (
-            perf["clicks"]
+            item["clicks"]
             < MIN_CLICKS_FOR_BASELINE
         ):
             continue
 
-        # Никакие shared-показы
-        # в baseline не включаем.
         if (
-            perf["impressions"]
+            item["impressions"]
             <= 0
         ):
             continue
 
         key = (
-            perf["campaign_id"],
-            perf["network"],
-            perf["kind"],
+
+            item[
+                "campaign_id"
+            ],
+
+            item[
+                "network"
+            ],
+
+            item[
+                "kind"
+            ],
         )
 
         groups[key].append(
-            perf
+            item
         )
 
     baselines = {}
@@ -2077,15 +2657,21 @@ def build_baselines(
         groups.items()
     ):
 
-        valid_ctr = [
+        ctr_values = [
+
             item["ctr"]
+
             for item in items
+
             if item["ctr"] > 0
         ]
 
-        valid_cpc = [
+        cpc_values = [
+
             item["avg_cpc"]
+
             for item in items
+
             if item[
                 "avg_cpc"
             ] > 0
@@ -2098,15 +2684,23 @@ def build_baselines(
 
             "ctr":
                 (
-                    median(valid_ctr)
-                    if valid_ctr
+                    median(
+                        ctr_values
+                    )
+
+                    if ctr_values
+
                     else 0
                 ),
 
             "cpc":
                 (
-                    median(valid_cpc)
-                    if valid_cpc
+                    median(
+                        cpc_values
+                    )
+
+                    if cpc_values
+
                     else 0
                 ),
         }
@@ -2119,161 +2713,238 @@ def build_baselines(
 # ============================================================
 
 def analyze_performance(
-    perf,
+    item,
     baseline,
 ):
 
-    # Только shared статистика.
+    # ========================================================
+    # ONLY SHARED STATS
+    # ========================================================
+
     if (
-        perf["impressions"] == 0
-        and perf[
+
+        item["impressions"] == 0
+
+        and
+
+        item[
             "shared_impressions"
         ] > 0
     ):
 
         return {
 
-            "score": None,
+            "score":
+                None,
 
             "status":
                 "unattributable",
 
             "reason": (
-                "В этом объявлении "
-                "несколько визуальных "
-                "ассетов. Direct не "
-                "показывает статистику "
-                "каждого отдельно."
+                "В объявлении одновременно "
+                "используется несколько "
+                "визуальных креативов. "
+                "Яндекс отдаёт общую "
+                "статистику объявления, "
+                "поэтому результат нельзя "
+                "надёжно распределить."
             ),
         }
 
+    # ========================================================
+    # NOT ENOUGH CLICKS
+    # ========================================================
+
     if (
-        perf["clicks"]
+        item["clicks"]
         < MIN_CLICKS_FOR_SCORE
     ):
 
         return {
 
-            "score": None,
+            "score":
+                None,
 
             "status":
                 "insufficient_data",
 
             "reason": (
-                f"Для оценки нужно "
-                f"минимум "
-                f"{MIN_CLICKS_FOR_SCORE} "
-                f"кликов."
+                "Недостаточно данных: "
+                f"для оценки требуется минимум "
+                f"{MIN_CLICKS_FOR_SCORE} кликов."
             ),
         }
 
+    # ========================================================
+    # NO PEERS
+    # ========================================================
+
     if (
+
         not baseline
-        or baseline["count"] < 2
-        or baseline["ctr"] <= 0
-        or baseline["cpc"] <= 0
+
+        or
+
+        baseline[
+            "count"
+        ] < 2
+
+        or
+
+        baseline[
+            "ctr"
+        ] <= 0
+
+        or
+
+        baseline[
+            "cpc"
+        ] <= 0
     ):
 
         return {
 
-            "score": None,
+            "score":
+                None,
 
             "status":
                 "no_peers",
 
             "reason": (
-                "Недостаточно "
-                "сопоставимых креативов "
+                "Недостаточно сопоставимых "
+                "визуальных креативов "
                 "в этой кампании."
             ),
         }
 
-    ctr_ratio = (
-        perf["ctr"]
-        / baseline["ctr"]
-    )
+    # ========================================================
+    # RELATIVE METRICS
+    # ========================================================
 
-    cpc_ratio = (
-        baseline["cpc"]
-        / perf["avg_cpc"]
-        if perf["avg_cpc"] > 0
+    ctr_ratio = (
+
+        item["ctr"]
+
+        / baseline["ctr"]
+
+        if baseline["ctr"] > 0
+
         else 1
     )
 
-    # ----------------------------------------
-    # CTR component
+    cpc_ratio = (
+
+        baseline["cpc"]
+
+        / item["avg_cpc"]
+
+        if item["avg_cpc"] > 0
+
+        else 1
+    )
+
+    # ========================================================
+    # CTR SCORE
     #
-    # 0.5x baseline => 0
-    # 1.0x baseline => 50
-    # 1.5x baseline => 100
-    # ----------------------------------------
+    # CTR = median       -> 50
+    # CTR = 1.5x median  -> 100
+    # CTR = 0.5x median  -> 0
+    # ========================================================
 
     ctr_component = clamp(
-        (
-            50
-            + (
-                ctr_ratio - 1
-            ) * 100
-        ),
+
+        50
+        + (
+            ctr_ratio - 1
+        ) * 100,
+
         0,
+
         100,
     )
 
-    # ----------------------------------------
-    # CPC component
+    # ========================================================
+    # CPC SCORE
     #
-    # CPC ниже baseline => больше score
-    # ----------------------------------------
+    # CPC ниже среднего = лучше
+    # ========================================================
 
     cpc_component = clamp(
-        (
-            50
-            + (
-                cpc_ratio - 1
-            ) * 100
-        ),
+
+        50
+        + (
+            cpc_ratio - 1
+        ) * 100,
+
         0,
+
         100,
     )
 
+    # ========================================================
+    # FINAL SCORE
+    #
+    # CTR 60%
+    # CPC 40%
+    # ========================================================
+
     score = round(
-        (
-            ctr_component * 0.60
-            + cpc_component * 0.40
+
+        ctr_component * 0.60
+
+        +
+
+        cpc_component * 0.40
+    )
+
+    score = int(
+        clamp(
+            score,
+            0,
+            100,
         )
     )
 
     if score >= 70:
 
-        status = "successful"
+        status = (
+            "successful"
+        )
 
         reason = (
-            "CTR/CPC лучше "
-            "сопоставимых креативов."
+            "Креатив работает лучше "
+            "медианы сопоставимых "
+            "креативов кампании."
         )
 
     elif score >= 45:
 
-        status = "normal"
+        status = (
+            "normal"
+        )
 
         reason = (
-            "Результат близок "
-            "к медиане кампании."
+            "Показатели близки "
+            "к медиане сопоставимых "
+            "креативов."
         )
 
     else:
 
-        status = "weak"
+        status = (
+            "weak"
+        )
 
         reason = (
-            "Уступает сопоставимым "
-            "креативам по CTR/CPC."
+            "Креатив уступает "
+            "сопоставимым визуалам "
+            "по CTR и/или CPC."
         )
 
     return {
 
         "score":
-            int(score),
+            score,
 
         "status":
             status,
@@ -2295,15 +2966,24 @@ def analyze_performance(
 
         "baseline_ctr":
             round(
-                baseline["ctr"],
+                baseline[
+                    "ctr"
+                ],
                 3,
             ),
 
         "baseline_cpc":
             round(
-                baseline["cpc"],
+                baseline[
+                    "cpc"
+                ],
                 2,
             ),
+
+        "peer_count":
+            baseline[
+                "count"
+            ],
     }
 
 
@@ -2323,45 +3003,59 @@ def analyze_assets(
 
     output = []
 
-    for perf in performances:
+    for item in performances:
 
-        key = (
-            perf["campaign_id"],
-            perf["network"],
-            perf["kind"],
+        baseline_key = (
+
+            item[
+                "campaign_id"
+            ],
+
+            item[
+                "network"
+            ],
+
+            item[
+                "kind"
+            ],
         )
 
         baseline = (
-            baselines.get(key)
+            baselines.get(
+                baseline_key
+            )
         )
 
         analysis = (
             analyze_performance(
-                perf,
+                item,
                 baseline,
             )
         )
 
         trend = (
             calculate_trend(
-                perf
+                item
             )
         )
 
         final_status = (
-            analysis["status"]
+            analysis[
+                "status"
+            ]
         )
 
-        # Trend переопределяет только
-        # те ассеты, которые уже можно
-        # нормально оценивать.
-        if (
-            final_status
-            not in (
-                "unattributable",
-                "insufficient_data",
-                "no_peers",
-            )
+        # ====================================================
+        # TREND CAN OVERRIDE SCORE STATUS
+        # ====================================================
+
+        if final_status not in (
+
+            "unattributable",
+
+            "insufficient_data",
+
+            "no_peers",
         ):
 
             if (
@@ -2382,54 +3076,82 @@ def analyze_assets(
                     "improving"
                 )
 
-        result = {
+        output_item = {
 
-            **{
-                key: value
-                for key, value
-                in perf.items()
-                if key != "daily"
-            },
+            key: value
 
-            **analysis,
+            for key, value
+            in item.items()
 
-            "status":
-                final_status,
-
-            "base_status":
-                analysis["status"],
-
-            "trend":
-                trend,
+            if key != "daily"
         }
 
-        output.append(result)
+        output_item.update(
+            analysis
+        )
+
+        output_item[
+            "base_status"
+        ] = (
+            analysis[
+                "status"
+            ]
+        )
+
+        output_item[
+            "status"
+        ] = (
+            final_status
+        )
+
+        output_item[
+            "trend"
+        ] = (
+            trend
+        )
+
+        output.append(
+            output_item
+        )
 
     priority = {
 
-        "fatigue": 0,
+        "fatigue":
+            0,
 
-        "weak": 1,
+        "weak":
+            1,
 
-        "improving": 2,
+        "improving":
+            2,
 
-        "successful": 3,
+        "successful":
+            3,
 
-        "normal": 4,
+        "normal":
+            4,
 
-        "insufficient_data": 5,
+        "insufficient_data":
+            5,
 
-        "no_peers": 6,
+        "no_peers":
+            6,
 
-        "unattributable": 7,
+        "unattributable":
+            7,
     }
 
     output.sort(
+
         key=lambda item: (
+
             priority.get(
-                item["status"],
+                item[
+                    "status"
+                ],
                 99,
             ),
+
             -item.get(
                 "spend",
                 0,
@@ -2444,16 +3166,20 @@ def analyze_assets(
 # CREATIVE SUMMARY
 # ============================================================
 
-def creative_summary(
+def calculate_creative_summary(
     creatives,
 ):
 
-    counts = defaultdict(int)
+    counts = defaultdict(
+        int
+    )
 
     for creative in creatives:
 
         counts[
-            creative["status"]
+            creative[
+                "status"
+            ]
         ] += 1
 
     return {
@@ -2462,19 +3188,29 @@ def creative_summary(
             len(creatives),
 
         "successful":
-            counts["successful"],
+            counts[
+                "successful"
+            ],
 
         "normal":
-            counts["normal"],
+            counts[
+                "normal"
+            ],
 
         "weak":
-            counts["weak"],
+            counts[
+                "weak"
+            ],
 
         "fatigue":
-            counts["fatigue"],
+            counts[
+                "fatigue"
+            ],
 
         "improving":
-            counts["improving"],
+            counts[
+                "improving"
+            ],
 
         "insufficient_data":
             counts[
@@ -2482,7 +3218,9 @@ def creative_summary(
             ],
 
         "no_peers":
-            counts["no_peers"],
+            counts[
+                "no_peers"
+            ],
 
         "unattributable":
             counts[
@@ -2492,39 +3230,61 @@ def creative_summary(
 
 
 # ============================================================
-# TOTAL SUMMARY
+# ACCOUNT SUMMARY
 # ============================================================
 
-def total_summary(
+def calculate_summary(
     campaigns,
 ):
 
     impressions = sum(
-        item["impressions"]
-        for item in campaigns
+
+        item[
+            "impressions"
+        ]
+
+        for item
+        in campaigns
     )
 
     clicks = sum(
-        item["clicks"]
-        for item in campaigns
+
+        item[
+            "clicks"
+        ]
+
+        for item
+        in campaigns
     )
 
     spend = sum(
-        item["spend"]
-        for item in campaigns
+
+        item[
+            "spend"
+        ]
+
+        for item
+        in campaigns
     )
 
     ctr = (
+
         clicks
         / impressions
         * 100
+
         if impressions
+
         else 0
     )
 
-    cpc = (
-        spend / clicks
+    avg_cpc = (
+
+        spend
+        / clicks
+
         if clicks
+
         else 0
     )
 
@@ -2550,17 +3310,46 @@ def total_summary(
 
         "avg_cpc":
             round(
-                cpc,
+                avg_cpc,
                 2,
             ),
     }
 
 
 # ============================================================
-# BUILD
+# BUILD REPORT
 # ============================================================
 
 def build_report():
+
+    print(
+        "",
+        flush=True,
+    )
+
+    print(
+        "======================================",
+        flush=True,
+    )
+
+    print(
+        "MARKETING RADAR UPDATE",
+        flush=True,
+    )
+
+    print(
+        "======================================",
+        flush=True,
+    )
+
+    # ========================================================
+    # 1. CAMPAIGN STATS
+    # ========================================================
+
+    print(
+        "",
+        flush=True,
+    )
 
     print(
         "1/6 Campaign report",
@@ -2571,17 +3360,48 @@ def build_report():
         get_campaign_rows()
     )
 
+    # ========================================================
+    # 2. AD STATS
+    # ========================================================
+
+    print(
+        "",
+        flush=True,
+    )
+
     print(
         "2/6 Ad performance report",
         flush=True,
     )
 
-    ad_rows = get_ad_rows()
+    ad_rows = (
+        get_ad_rows()
+    )
 
     ad_ids = sorted({
-        row["ad_id"]
-        for row in ad_rows
+
+        row[
+            "ad_id"
+        ]
+
+        for row
+        in ad_rows
     })
+
+    print(
+        "Unique Ads:",
+        len(ad_ids),
+        flush=True,
+    )
+
+    # ========================================================
+    # 3. ADS.GET
+    # ========================================================
+
+    print(
+        "",
+        flush=True,
+    )
 
     print(
         "3/6 Ads.get",
@@ -2592,17 +3412,15 @@ def build_report():
         ad_ids
     )
 
-    # ----------------------------------------
-    # Ad -> visual assets
-    # ----------------------------------------
+    # ========================================================
+    # EXTRACT ASSETS
+    # ========================================================
 
     ad_asset_map = {}
 
     asset_registry = {}
 
-    for ad_id, ad in (
-        ads.items()
-    ):
+    for ad_id, ad in ads.items():
 
         assets = (
             extract_ad_assets(
@@ -2612,21 +3430,28 @@ def build_report():
 
         ad_asset_map[
             ad_id
-        ] = assets
+        ] = (
+            assets
+        )
 
         for asset in assets:
 
-            key = (
-                asset["asset_key"]
+            asset_key = (
+                asset[
+                    "asset_key"
+                ]
             )
 
-            if key not in (
-                asset_registry
+            if (
+                asset_key
+                not in asset_registry
             ):
 
                 asset_registry[
-                    key
-                ] = asset.copy()
+                    asset_key
+                ] = (
+                    asset.copy()
+                )
 
     print(
         "Unique visual assets:",
@@ -2635,30 +3460,87 @@ def build_report():
     )
 
     image_hashes = [
-        asset["asset_id"]
+
+        asset[
+            "asset_id"
+        ]
+
         for asset
         in asset_registry.values()
-        if asset["asset_key"]
-        .startswith("image:")
+
+        if asset[
+            "asset_key"
+        ].startswith(
+            "image:"
+        )
     ]
 
     creative_ids = [
-        asset["asset_id"]
+
+        asset[
+            "asset_id"
+        ]
+
         for asset
         in asset_registry.values()
-        if asset["asset_key"]
-        .startswith("creative:")
+
+        if asset[
+            "asset_key"
+        ].startswith(
+            "creative:"
+        )
     ]
+
+    print(
+        "Image assets:",
+        len(image_hashes),
+        flush=True,
+    )
+
+    print(
+        "Creative IDs:",
+        len(creative_ids),
+        flush=True,
+    )
+
+    # ========================================================
+    # 4. IMAGE METADATA
+    # ========================================================
+
+    print(
+        "",
+        flush=True,
+    )
 
     print(
         "4/6 AdImages.get",
         flush=True,
     )
 
-    image_meta = (
-        get_adimage_metadata(
-            image_hashes
+    image_metadata = {}
+
+    if image_hashes:
+
+        image_metadata = (
+            get_adimage_metadata(
+                image_hashes
+            )
         )
+
+    else:
+
+        print(
+            "No image hashes.",
+            flush=True,
+        )
+
+    # ========================================================
+    # 5. CREATIVE METADATA
+    # ========================================================
+
+    print(
+        "",
+        flush=True,
     )
 
     print(
@@ -2666,40 +3548,78 @@ def build_report():
         flush=True,
     )
 
-    creative_meta = (
-        get_creative_metadata(
-            creative_ids
+    creative_metadata = {}
+
+    if creative_ids:
+
+        creative_metadata = (
+            get_creative_metadata(
+                creative_ids
+            )
         )
-    )
+
+    else:
+
+        print(
+            "No CreativeIds.",
+            flush=True,
+        )
+
+    # ========================================================
+    # 6. ANALYSIS
+    # ========================================================
 
     print(
-        "6/6 Calculate creative stats",
+        "",
         flush=True,
     )
 
-    performance = (
+    print(
+        "6/6 Creative analysis",
+        flush=True,
+    )
+
+    asset_performance = (
         build_asset_performance(
+
             ad_rows,
+
             ad_asset_map,
         )
     )
 
     enrich_asset_metadata(
-        performance,
+
+        asset_performance,
+
         asset_registry,
-        image_meta,
-        creative_meta,
+
+        image_metadata,
+
+        creative_metadata,
     )
 
     creatives = (
         analyze_assets(
-            performance
+            asset_performance
         )
     )
 
     campaigns = (
         aggregate_campaigns(
             campaign_rows
+        )
+    )
+
+    creative_summary = (
+        calculate_creative_summary(
+            creatives
+        )
+    )
+
+    summary = (
+        calculate_summary(
+            campaigns
         )
     )
 
@@ -2719,24 +3639,23 @@ def build_report():
                 REPORT_DAYS,
 
             "creative_method":
-                "visual_asset_v2",
+                "visual_asset_v3",
+
+            "score_model":
+                "CTR_60_CPC_40",
 
             "min_clicks":
                 MIN_CLICKS_FOR_SCORE,
         },
 
         "summary":
-            total_summary(
-                campaigns
-            ),
+            summary,
 
         "campaigns":
             campaigns,
 
         "creative_summary":
-            creative_summary(
-                creatives
-            ),
+            creative_summary,
 
         "creatives":
             creatives,
@@ -2746,10 +3665,21 @@ def build_report():
     }
 
     print(
-        "Creative summary:",
-        report[
-            "creative_summary"
-        ],
+        "",
+        flush=True,
+    )
+
+    print(
+        "CREATIVE SUMMARY",
+        flush=True,
+    )
+
+    print(
+        json.dumps(
+            creative_summary,
+            ensure_ascii=False,
+            indent=2,
+        ),
         flush=True,
     )
 
@@ -2760,18 +3690,23 @@ def build_report():
 # ENCRYPTION
 # ============================================================
 
-def derive_key(
+def derive_encryption_key(
     password,
     salt,
 ):
 
     return hashlib.pbkdf2_hmac(
+
         "sha256",
+
         password.encode(
             "utf-8"
         ),
+
         salt,
+
         PBKDF2_ITERATIONS,
+
         dklen=32,
     )
 
@@ -2781,35 +3716,51 @@ def encrypt_report(
 ):
 
     plaintext = json.dumps(
+
         report,
+
         ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
 
-    salt = (
-        secrets.token_bytes(16)
+        separators=(
+            ",",
+            ":",
+        ),
+    ).encode(
+        "utf-8"
     )
 
-    nonce = (
-        secrets.token_bytes(12)
+    salt = secrets.token_bytes(
+        16
     )
 
-    key = derive_key(
-        REPORT_PASSWORD,
-        salt,
+    nonce = secrets.token_bytes(
+        12
     )
 
-    aes = AESGCM(key)
+    key = (
+        derive_encryption_key(
+            REPORT_PASSWORD,
+            salt,
+        )
+    )
+
+    aes = AESGCM(
+        key
+    )
 
     ciphertext = aes.encrypt(
+
         nonce,
+
         plaintext,
+
         None,
     )
 
     return {
 
-        "version": 2,
+        "version":
+            3,
 
         "kdf":
             "PBKDF2-SHA256",
@@ -2823,17 +3774,23 @@ def encrypt_report(
         "salt":
             base64.b64encode(
                 salt
-            ).decode("ascii"),
+            ).decode(
+                "ascii"
+            ),
 
         "nonce":
             base64.b64encode(
                 nonce
-            ).decode("ascii"),
+            ).decode(
+                "ascii"
+            ),
 
         "ciphertext":
             base64.b64encode(
                 ciphertext
-            ).decode("ascii"),
+            ).decode(
+                "ascii"
+            ),
     }
 
 
@@ -2843,7 +3800,9 @@ def encrypt_report(
 
 def main():
 
-    report = build_report()
+    report = (
+        build_report()
+    )
 
     encrypted = (
         encrypt_report(
@@ -2852,17 +3811,44 @@ def main():
     )
 
     OUT.parent.mkdir(
+
         parents=True,
+
         exist_ok=True,
     )
 
     OUT.write_text(
+
         json.dumps(
+
             encrypted,
+
             ensure_ascii=False,
-            separators=(",", ":"),
+
+            separators=(
+                ",",
+                ":",
+            ),
         ),
-        encoding="utf-8",
+
+        encoding=(
+            "utf-8"
+        ),
+    )
+
+    print(
+        "",
+        flush=True,
+    )
+
+    print(
+        "======================================",
+        flush=True,
+    )
+
+    print(
+        "DONE",
+        flush=True,
     )
 
     print(
@@ -2871,6 +3857,12 @@ def main():
         flush=True,
     )
 
+    print(
+        "======================================",
+        flush=True,
+    )
+
 
 if __name__ == "__main__":
+
     main()
