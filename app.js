@@ -1,171 +1,76 @@
 let DATA = null;
+let ALERT_FILTER = "all";
 
-const fmt =
-  new Intl.NumberFormat("ru-RU");
-
-
-const money = value =>
-  `${fmt.format(
-    Math.round(
-      Number(value || 0)
-    )
-  )} ₽`;
-
-
-const number = value =>
-  fmt.format(
-    Math.round(
-      Number(value || 0)
-    )
-  );
-
-
-const pct = value =>
-  `${Number(
-    value || 0
-  ).toFixed(2)}%`;
-
+const fmt = new Intl.NumberFormat("ru-RU");
+const money = value => `${fmt.format(Math.round(Number(value || 0)))} ₽`;
+const number = value => fmt.format(Math.round(Number(value || 0)));
+const metricNumber = value => Number(value || 0).toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+const pct = value => `${Number(value || 0).toFixed(2)}%`;
 
 /* =========================================================
    CRYPTO
 ========================================================= */
 
-function base64ToBytes(
-  base64
-) {
-
-  const binary =
-    atob(base64);
-
-  const bytes =
-    new Uint8Array(
-      binary.length
-    );
-
-  for (
-    let i = 0;
-    i < binary.length;
-    i++
-  ) {
-
-    bytes[i] =
-      binary.charCodeAt(i);
-  }
-
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
 
-
-async function deriveKey(
-  password,
-  salt,
-  iterations
-) {
-
-  const material =
-    await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(
-        password
-      ),
-      "PBKDF2",
-      false,
-      ["deriveKey"]
-    );
+async function deriveKey(password, salt, iterations) {
+  const material = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
 
   return crypto.subtle.deriveKey(
-
-    {
-      name: "PBKDF2",
-      salt,
-      iterations,
-      hash: "SHA-256",
-    },
-
+    { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
     material,
-
-    {
-      name: "AES-GCM",
-      length: 256,
-    },
-
+    { name: "AES-GCM", length: 256 },
     false,
-
     ["decrypt"]
   );
 }
 
+async function decryptPayload(payload, password) {
+  const salt = base64ToBytes(payload.salt);
+  const nonce = base64ToBytes(payload.nonce);
+  const ciphertext = base64ToBytes(payload.ciphertext);
+  const key = await deriveKey(password, salt, payload.iterations);
 
-async function decryptPayload(
-  payload,
-  password
-) {
-
-  const salt =
-    base64ToBytes(
-      payload.salt
-    );
-
-  const nonce =
-    base64ToBytes(
-      payload.nonce
-    );
-
-  const ciphertext =
-    base64ToBytes(
-      payload.ciphertext
-    );
-
-  const key =
-    await deriveKey(
-      password,
-      salt,
-      payload.iterations
-    );
-
-  const plaintext =
-    await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: nonce,
-      },
-      key,
-      ciphertext
-    );
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: nonce },
+    key,
+    ciphertext
+  );
 
   return JSON.parse(
-    new TextDecoder().decode(
-      plaintext
-    )
+    new TextDecoder().decode(plaintext)
   );
 }
 
-
-async function loadEncryptedReport(
-  password
-) {
-
-  const response =
-    await fetch(
-      `data/report.enc?t=${Date.now()}`
-    );
+async function loadEncryptedReport(password) {
+  const response = await fetch(
+    `data/report.enc?t=${Date.now()}`
+  );
 
   if (!response.ok) {
-
     throw new Error(
       `HTTP ${response.status}`
     );
   }
 
-  const payload =
-    await response.json();
+  const payload = await response.json();
 
   return decryptPayload(
     payload,
     password
   );
 }
-
 
 /* =========================================================
    LOGIN
@@ -222,8 +127,7 @@ function showLogin() {
             font-size:13px;
           "
         >
-          Введите пароль
-          для расшифровки данных.
+          Введите пароль для расшифровки данных.
         </p>
 
         <input
@@ -284,7 +188,6 @@ function showLogin() {
       "loginButton"
     );
 
-
   async function login() {
 
     const password =
@@ -315,7 +218,7 @@ function showLogin() {
         .getElementById(
           "loginOverlay"
         )
-        .remove();
+        ?.remove();
 
       render();
 
@@ -328,7 +231,7 @@ function showLogin() {
           "loginError"
         )
         .textContent =
-          "Неверный пароль.";
+          "Неверный пароль или не удалось расшифровать отчёт.";
 
       button.disabled = false;
 
@@ -337,12 +240,10 @@ function showLogin() {
     }
   }
 
-
   button.addEventListener(
     "click",
     login
   );
-
 
   input.addEventListener(
     "keydown",
@@ -351,7 +252,6 @@ function showLogin() {
       if (
         event.key === "Enter"
       ) {
-
         login();
       }
     }
@@ -359,7 +259,6 @@ function showLogin() {
 
   input.focus();
 }
-
 
 async function start() {
 
@@ -381,7 +280,9 @@ async function start() {
 
       return;
 
-    } catch {
+    } catch (error) {
+
+      console.error(error);
 
       sessionStorage.removeItem(
         "marketingRadarPassword"
@@ -392,30 +293,238 @@ async function start() {
   showLogin();
 }
 
-
 /* =========================================================
-   MAIN RENDER
+   MAIN
 ========================================================= */
 
 function render() {
 
+  if (!DATA) {
+    return;
+  }
+
+  ensureKeywordsUI();
+
+  prepareStaticCopy();
+
   renderMeta();
 
-  renderHero();
+  renderOverview();
 
-  renderKPIs();
+  renderAlerts();
 
-  renderCampaignTable();
-
-  renderDirectSummary();
-
-  renderCreativeSummary();
+  renderBudgetTable();
 
   renderCreatives();
 
   renderKeywords();
 }
 
+/* =========================================================
+   DYNAMIC KEYWORDS SECTION
+========================================================= */
+
+function ensureKeywordsUI() {
+
+  const sidebarNav =
+    document.querySelector(
+      ".sidebar nav"
+    );
+
+  if (
+    sidebarNav
+    &&
+    !sidebarNav.querySelector(
+      '[data-section="keywords"]'
+    )
+  ) {
+
+    const button =
+      document.createElement(
+        "button"
+      );
+
+    button.className =
+      "nav";
+
+    button.dataset.section =
+      "keywords";
+
+    button.textContent =
+      "Ключевые фразы";
+
+    sidebarNav.appendChild(
+      button
+    );
+  }
+
+  if (
+    !document.getElementById(
+      "keywords"
+    )
+  ) {
+
+    const section =
+      document.createElement(
+        "section"
+      );
+
+    section.id =
+      "keywords";
+
+    section.className =
+      "section";
+
+    section.innerHTML = `
+
+      <div
+        class="section-head top"
+      >
+
+        <div>
+
+          <h2>
+            Ключевые фразы
+          </h2>
+
+          <p>
+            Какие рекламные ключи чаще приводят
+            к конверсиям и сколько стоит результат.
+          </p>
+
+        </div>
+
+      </div>
+
+
+      <div
+        id="keywordKpis"
+        class="kpi-grid"
+      ></div>
+
+
+      <div
+        id="keywordNote"
+        class="note"
+        style="
+          margin-bottom:12px;
+        "
+      ></div>
+
+
+      <div
+        class="panel"
+      >
+
+        <div
+          class="panel-head"
+        >
+
+          <h3>
+            Рейтинг ключевых фраз
+          </h3>
+
+          <p>
+            Сортировка по количеству конверсий,
+            затем по стоимости конверсии.
+          </p>
+
+        </div>
+
+
+        <div
+          id="keywordsTable"
+          style="
+            overflow:auto;
+          "
+        ></div>
+
+      </div>
+
+    `;
+
+    const footer =
+      document.querySelector(
+        "main footer"
+      );
+
+    if (footer) {
+
+      footer.parentNode.insertBefore(
+        section,
+        footer
+      );
+
+    } else {
+
+      document
+        .querySelector(
+          "main"
+        )
+        ?.appendChild(
+          section
+        );
+    }
+  }
+}
+
+function prepareStaticCopy() {
+
+  const campaignTitle =
+    document.querySelector(
+      "#overview .split .panel:first-child .panel-head h3"
+    );
+
+  const campaignCopy =
+    document.querySelector(
+      "#overview .split .panel:first-child .panel-head p"
+    );
+
+  const budgetCopy =
+    document.querySelector(
+      "#overview .split .panel:nth-child(2) .panel-head p"
+    );
+
+  const overviewHead =
+    document.querySelector(
+      "#overview .section-head h3"
+    );
+
+  const overviewHeadCopy =
+    document.querySelector(
+      "#overview .section-head p"
+    );
+
+  if (campaignTitle) {
+
+    campaignTitle.textContent =
+      "Показатели кампаний";
+  }
+
+  if (campaignCopy) {
+
+    campaignCopy.textContent =
+      "Расход, показы, клики, CTR, CPC, конверсии и CPA.";
+  }
+
+  if (budgetCopy) {
+
+    budgetCopy.textContent =
+      "Краткая сводка по расходам и эффективности рекламы.";
+  }
+
+  if (overviewHead) {
+
+    overviewHead.textContent =
+      "Что требует внимания";
+  }
+
+  if (overviewHeadCopy) {
+
+    overviewHeadCopy.textContent =
+      "Сигналы рассчитываются по показателям рекламных кампаний.";
+  }
+}
 
 /* =========================================================
    META
@@ -439,6 +548,7 @@ function renderMeta() {
     );
 
   if (sidebar) {
+
     sidebar.textContent =
       updated;
   }
@@ -448,461 +558,2100 @@ function renderMeta() {
     footer.textContent =
       `Обновлено ${updated}`;
   }
+}
 
-  const badge =
-    document.getElementById(
-      "navAlertCount"
+/* =========================================================
+   PERIOD / DATA
+========================================================= */
+
+function getSelectedPeriodDays() {
+
+  const value =
+    Number(
+      document
+        .getElementById(
+          "periodSelect"
+        )
+        ?.value
+      || 30
     );
 
-  if (badge) {
-    badge.textContent = "—";
+  return (
+    Number.isFinite(value)
+    &&
+    value > 0
+  )
+    ? value
+    : 30;
+}
+
+function finalizeCampaign(
+  campaign
+) {
+
+  const impressions =
+    Number(
+      campaign.impressions
+      || 0
+    );
+
+  const clicks =
+    Number(
+      campaign.clicks
+      || 0
+    );
+
+  const spend =
+    Number(
+      campaign.spend
+      || 0
+    );
+
+  const conversions =
+    Number(
+      campaign.conversions
+      || 0
+    );
+
+  return {
+
+    ...campaign,
+
+    impressions,
+
+    clicks,
+
+    spend,
+
+    conversions,
+
+    ctr:
+      impressions > 0
+
+        ? clicks
+          / impressions
+          * 100
+
+        : 0,
+
+    avg_cpc:
+      clicks > 0
+
+        ? spend
+          / clicks
+
+        : 0,
+
+    conversion_rate:
+      clicks > 0
+
+        ? conversions
+          / clicks
+          * 100
+
+        : 0,
+
+    cpa:
+      conversions > 0
+
+        ? spend
+          / conversions
+
+        : 0,
+  };
+}
+
+function summarizeCampaigns(
+  campaigns
+) {
+
+  const impressions =
+    campaigns.reduce(
+      (
+        sum,
+        campaign
+      ) =>
+        sum
+        +
+        Number(
+          campaign.impressions
+          || 0
+        ),
+      0
+    );
+
+  const clicks =
+    campaigns.reduce(
+      (
+        sum,
+        campaign
+      ) =>
+        sum
+        +
+        Number(
+          campaign.clicks
+          || 0
+        ),
+      0
+    );
+
+  const spend =
+    campaigns.reduce(
+      (
+        sum,
+        campaign
+      ) =>
+        sum
+        +
+        Number(
+          campaign.spend
+          || 0
+        ),
+      0
+    );
+
+  const conversions =
+    campaigns.reduce(
+      (
+        sum,
+        campaign
+      ) =>
+        sum
+        +
+        Number(
+          campaign.conversions
+          || 0
+        ),
+      0
+    );
+
+  return {
+
+    impressions,
+
+    clicks,
+
+    spend,
+
+    conversions,
+
+    ctr:
+      impressions > 0
+
+        ? clicks
+          / impressions
+          * 100
+
+        : 0,
+
+    avg_cpc:
+      clicks > 0
+
+        ? spend
+          / clicks
+
+        : 0,
+
+    conversion_rate:
+      clicks > 0
+
+        ? conversions
+          / clicks
+          * 100
+
+        : 0,
+
+    cpa:
+      conversions > 0
+
+        ? spend
+          / conversions
+
+        : 0,
+  };
+}
+
+function snapshotFromCampaigns(
+  campaigns,
+  periodDays
+) {
+
+  const normalized =
+    [...campaigns]
+      .map(
+        campaign =>
+          finalizeCampaign({
+
+            campaign_id:
+              campaign.campaign_id,
+
+            name:
+              campaign.name
+              ||
+              campaign.campaign_name
+              ||
+              "Без названия",
+
+            impressions:
+              Number(
+                campaign.impressions
+                || 0
+              ),
+
+            clicks:
+              Number(
+                campaign.clicks
+                || 0
+              ),
+
+            spend:
+              Number(
+                campaign.spend
+                ??
+                campaign.cost
+                ??
+                0
+              ),
+
+            conversions:
+              Number(
+                campaign.conversions
+                || 0
+              ),
+          })
+      )
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          b.spend
+          -
+          a.spend
+      );
+
+  return {
+
+    periodDays,
+
+    campaigns:
+      normalized,
+
+    summary:
+      summarizeCampaigns(
+        normalized
+      ),
+  };
+}
+
+function getOverviewSnapshot() {
+
+  const periodDays =
+    getSelectedPeriodDays();
+
+  const sourceRows =
+    Array.isArray(
+      DATA.daily
+    )
+      ? DATA.daily
+      : [];
+
+  if (
+    !sourceRows.length
+  ) {
+
+    return snapshotFromCampaigns(
+      DATA.campaigns
+      || [],
+      periodDays
+    );
+  }
+
+  const dates =
+    sourceRows
+      .map(
+        row =>
+          String(
+            row.date
+            || ""
+          )
+      )
+      .filter(
+        Boolean
+      )
+      .sort();
+
+  if (
+    !dates.length
+  ) {
+
+    return snapshotFromCampaigns(
+      DATA.campaigns
+      || [],
+      periodDays
+    );
+  }
+
+  const latestDate =
+    new Date(
+      `${dates[
+        dates.length - 1
+      ]}T00:00:00Z`
+    );
+
+  const startDate =
+    new Date(
+      latestDate
+    );
+
+  startDate.setUTCDate(
+    startDate.getUTCDate()
+    -
+    periodDays
+    +
+    1
+  );
+
+  const campaignMap =
+    new Map();
+
+  sourceRows.forEach(
+    row => {
+
+      if (
+        !row.date
+      ) {
+        return;
+      }
+
+      const date =
+        new Date(
+          `${row.date}T00:00:00Z`
+        );
+
+      if (
+        date < startDate
+        ||
+        date > latestDate
+      ) {
+        return;
+      }
+
+      const id =
+        String(
+          row.campaign_id
+          || ""
+        );
+
+      if (
+        !id
+      ) {
+        return;
+      }
+
+      if (
+        !campaignMap.has(
+          id
+        )
+      ) {
+
+        campaignMap.set(
+          id,
+          {
+
+            campaign_id:
+              id,
+
+            name:
+              row.campaign_name
+              ||
+              "Без названия",
+
+            impressions:
+              0,
+
+            clicks:
+              0,
+
+            spend:
+              0,
+
+            conversions:
+              0,
+          }
+        );
+      }
+
+      const item =
+        campaignMap.get(
+          id
+        );
+
+      item.impressions +=
+        Number(
+          row.impressions
+          || 0
+        );
+
+      item.clicks +=
+        Number(
+          row.clicks
+          || 0
+        );
+
+      item.spend +=
+        Number(
+          row.cost
+          || 0
+        );
+
+      item.conversions +=
+        Number(
+          row.conversions
+          || 0
+        );
+    }
+  );
+
+  const campaigns =
+    [
+      ...campaignMap.values()
+    ]
+      .map(
+        finalizeCampaign
+      )
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          b.spend
+          -
+          a.spend
+      );
+
+  return {
+
+    periodDays,
+
+    campaigns,
+
+    summary:
+      summarizeCampaigns(
+        campaigns
+      ),
+  };
+}
+
+/* =========================================================
+   OVERVIEW
+========================================================= */
+
+function renderOverview() {
+
+  const snapshot =
+    getOverviewSnapshot();
+
+  renderHero(
+    snapshot
+  );
+
+  renderKPIs(
+    snapshot
+  );
+
+  renderCampaignTable(
+    snapshot
+  );
+
+  renderDirectSummary(
+    snapshot
+  );
+
+  renderOverviewInsights(
+    snapshot
+  );
+}
+
+function renderHero(
+  snapshot
+) {
+
+  const s =
+    snapshot.summary;
+
+  const headline =
+    document.getElementById(
+      "heroHeadline"
+    );
+
+  const copy =
+    document.getElementById(
+      "heroCopy"
+    );
+
+  const health =
+    document.getElementById(
+      "healthScore"
+    );
+
+  if (headline) {
+
+    headline.textContent =
+      "Marketing Radar работает";
+  }
+
+  if (copy) {
+
+    const conversionPart =
+      Number(
+        s.conversions
+        || 0
+      ) > 0
+
+        ? (
+          ` · ${
+            metricNumber(
+              s.conversions
+            )
+          } конверсий`
+        )
+
+        : "";
+
+    copy.textContent =
+      `${
+        number(
+          snapshot
+            .campaigns
+            .length
+        )
+      } кампаний · `
+      +
+      `${
+        money(
+          s.spend
+        )
+      } расходов · `
+      +
+      `${
+        number(
+          s.clicks
+        )
+      } кликов`
+      +
+      conversionPart;
+  }
+
+  if (health) {
+
+    health.textContent =
+      "LIVE";
   }
 }
 
+function renderKPIs(
+  snapshot
+) {
 
-/* =========================================================
-   HERO
-========================================================= */
+  const container =
+    document.getElementById(
+      "kpis"
+    );
 
-function renderHero() {
-
-  const s =
-    DATA.summary || {};
-
-  const creatives =
-    DATA.creative_summary || {};
-
-  document.getElementById(
-    "heroHeadline"
-  ).textContent =
-    "Marketing Radar работает";
-
-  document.getElementById(
-    "heroCopy"
-  ).textContent =
-    `${number(
-      creatives.total
-    )} визуальных креативов · ` +
-    `${money(
-      s.spend
-    )} расходов · ` +
-    `${number(
-      s.clicks
-    )} кликов`;
-
-  document.getElementById(
-    "healthScore"
-  ).textContent =
-    "LIVE";
-}
-
-
-/* =========================================================
-   KPI
-========================================================= */
-
-function renderKPIs() {
+  if (
+    !container
+  ) {
+    return;
+  }
 
   const s =
-    DATA.summary || {};
+    snapshot.summary;
 
   const items = [
 
     [
       "Расход",
-      money(s.spend)
+      money(
+        s.spend
+      ),
     ],
 
     [
       "Показы",
       number(
         s.impressions
-      )
+      ),
     ],
 
     [
       "Клики",
       number(
         s.clicks
-      )
+      ),
     ],
 
     [
       "CTR",
       pct(
         s.ctr
-      )
+      ),
     ],
   ];
 
-
-  document.getElementById(
-    "kpis"
-  ).innerHTML =
-
-    items.map(
-      ([label, value]) => `
-
-        <div class="kpi">
-
-          <div class="label">
-            ${label}
-          </div>
-
-          <div class="value">
-            ${value}
-          </div>
+  container.innerHTML =
+    items
+      .map(
+        (
+          [
+            label,
+            value
+          ]
+        ) => `
 
           <div
-            class="delta neutral"
+            class="kpi"
           >
-            за 60 дней
+
+            <div
+              class="label"
+            >
+              ${
+                escapeHtml(
+                  label
+                )
+              }
+            </div>
+
+            <div
+              class="value"
+            >
+              ${
+                escapeHtml(
+                  value
+                )
+              }
+            </div>
+
+            <div
+              class="delta neutral"
+            >
+              за ${
+                snapshot.periodDays
+              } дней
+            </div>
+
           </div>
 
-        </div>
-
-      `
-    ).join("");
+        `
+      )
+      .join("");
 }
 
+function renderCampaignTable(
+  snapshot
+) {
 
-/* =========================================================
-   CAMPAIGNS
-========================================================= */
+  const container =
+    document.getElementById(
+      "campaignTable"
+    );
 
-function renderCampaignTable() {
+  if (
+    !container
+  ) {
+    return;
+  }
 
-  const campaigns =
-    [...(
-      DATA.campaigns || []
-    )];
+  if (
+    !snapshot
+      .campaigns
+      .length
+  ) {
 
-  campaigns.sort(
-    (a, b) =>
-      b.spend - a.spend
-  );
+    container.innerHTML =
+      `
+      <div
+        class="note"
+      >
+        Нет данных
+        по кампаниям.
+      </div>
+      `;
 
+    return;
+  }
 
-  document.getElementById(
-    "campaignTable"
-  ).innerHTML = `
+  container.innerHTML = `
 
-    <table class="table">
+    <div
+      style="
+        overflow:auto;
+      "
+    >
 
-      <thead>
+      <table
+        class="table"
+      >
 
-        <tr>
+        <thead>
 
-          <th>
-            Кампания
-          </th>
+          <tr>
 
-          <th>
-            Расход
-          </th>
+            <th>
+              Кампания
+            </th>
 
-          <th>
-            Показы
-          </th>
+            <th>
+              Расход
+            </th>
 
-          <th>
-            Клики
-          </th>
+            <th>
+              Показы
+            </th>
 
-          <th>
-            CTR
-          </th>
+            <th>
+              Клики
+            </th>
 
-          <th>
-            CPC
-          </th>
+            <th>
+              CTR
+            </th>
 
-        </tr>
+            <th>
+              CPC
+            </th>
 
-      </thead>
+            <th>
+              Конверсии
+            </th>
 
+            <th>
+              CPA
+            </th>
 
-      <tbody>
+          </tr>
 
-        ${campaigns.map(
-          campaign => `
+        </thead>
 
-            <tr>
+        <tbody>
 
-              <td>
-                ${escapeHtml(
-                  campaign.name
-                )}
-              </td>
+          ${
+            snapshot
+              .campaigns
+              .map(
+                campaign => `
 
-              <td>
-                ${money(
-                  campaign.spend
-                )}
-              </td>
+                  <tr>
 
-              <td>
-                ${number(
-                  campaign.impressions
-                )}
-              </td>
+                    <td>
+                      ${
+                        escapeHtml(
+                          campaign.name
+                          ||
+                          "Без названия"
+                        )
+                      }
+                    </td>
 
-              <td>
-                ${number(
-                  campaign.clicks
-                )}
-              </td>
+                    <td>
+                      ${
+                        money(
+                          campaign.spend
+                        )
+                      }
+                    </td>
 
-              <td>
-                ${pct(
-                  campaign.ctr
-                )}
-              </td>
+                    <td>
+                      ${
+                        number(
+                          campaign.impressions
+                        )
+                      }
+                    </td>
 
-              <td>
-                ${money(
-                  campaign.avg_cpc
-                )}
-              </td>
+                    <td>
+                      ${
+                        number(
+                          campaign.clicks
+                        )
+                      }
+                    </td>
 
-            </tr>
+                    <td>
+                      ${
+                        pct(
+                          campaign.ctr
+                        )
+                      }
+                    </td>
 
-          `
-        ).join("")}
+                    <td>
+                      ${
+                        campaign.avg_cpc
+                        > 0
 
-      </tbody>
+                          ? money(
+                              campaign.avg_cpc
+                            )
 
-    </table>
+                          : "—"
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        metricNumber(
+                          campaign.conversions
+                        )
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        campaign.cpa
+                        > 0
+
+                          ? money(
+                              campaign.cpa
+                            )
+
+                          : "—"
+                      }
+                    </td>
+
+                  </tr>
+
+                `
+              )
+              .join("")
+          }
+
+        </tbody>
+
+      </table>
+
+    </div>
+
   `;
 }
 
-
-/* =========================================================
-   RIGHT SUMMARY
-========================================================= */
-
-function renderDirectSummary() {
-
-  const campaigns =
-    [...(
-      DATA.campaigns || []
-    )];
-
-  const highestSpend =
-    campaigns
-      .slice()
-      .sort(
-        (a, b) =>
-          b.spend
-          - a.spend
-      )[0];
-
-
-  const bestCtr =
-    campaigns
-      .slice()
-      .sort(
-        (a, b) =>
-          b.ctr
-          - a.ctr
-      )[0];
-
+function renderDirectSummary(
+  snapshot
+) {
 
   const container =
     document.getElementById(
       "budgetPreview"
     );
 
-
-  if (!container) {
+  if (
+    !container
+  ) {
     return;
   }
 
+  const campaigns =
+    snapshot.campaigns;
 
-  container.innerHTML = `
+  const s =
+    snapshot.summary;
 
-    <div class="budget-item">
+  const highestSpend =
+    campaigns[0];
 
-      <div>
+  const bestCtr =
+    campaigns
+      .filter(
+        campaign =>
+          campaign.clicks
+          >= 10
+      )
+      .slice()
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          b.ctr
+          -
+          a.ctr
+      )[0];
 
-        <strong>
-          Средний CPC
-        </strong>
+  const items = [
 
-        <small>
-          По всем кампаниям
-        </small>
+    {
 
-      </div>
+      label:
+        "Средний CPC",
 
-      <strong>
-        ${money(
-          DATA.summary.avg_cpc
-        )}
-      </strong>
+      meta:
+        "По всем кампаниям",
 
-    </div>
+      value:
+        s.avg_cpc
+        > 0
 
+          ? money(
+              s.avg_cpc
+            )
 
-    ${
-      highestSpend
-        ? `
+          : "—",
+    },
 
-          <div class="budget-item">
+    {
+
+      label:
+        "Конверсии",
+
+      meta:
+        `За ${
+          snapshot.periodDays
+        } дней`,
+
+      value:
+        metricNumber(
+          s.conversions
+        ),
+    },
+
+    {
+
+      label:
+        "Средний CPA",
+
+      meta:
+        "По всем конверсиям",
+
+      value:
+        s.cpa
+        > 0
+
+          ? money(
+              s.cpa
+            )
+
+          : "—",
+    },
+  ];
+
+  if (
+    highestSpend
+  ) {
+
+    items.push({
+
+      label:
+        "Максимальный расход",
+
+      meta:
+        highestSpend.name,
+
+      value:
+        money(
+          highestSpend.spend
+        ),
+    });
+  }
+
+  if (
+    bestCtr
+  ) {
+
+    items.push({
+
+      label:
+        "Лучший CTR",
+
+      meta:
+        bestCtr.name,
+
+      value:
+        pct(
+          bestCtr.ctr
+        ),
+    });
+  }
+
+  container.innerHTML =
+    items
+      .map(
+        item => `
+
+          <div
+            class="budget-item"
+          >
 
             <div>
 
               <strong>
-                Максимальный расход
+                ${
+                  escapeHtml(
+                    item.label
+                  )
+                }
               </strong>
 
               <small>
-                ${escapeHtml(
-                  highestSpend.name
-                )}
+                ${
+                  escapeHtml(
+                    item.meta
+                    || ""
+                  )
+                }
               </small>
 
             </div>
 
             <strong>
-              ${money(
-                highestSpend.spend
-              )}
+              ${
+                escapeHtml(
+                  item.value
+                )
+              }
             </strong>
 
           </div>
 
         `
-        : ""
-    }
-
-
-    ${
-      bestCtr
-        ? `
-
-          <div class="budget-item">
-
-            <div>
-
-              <strong>
-                Лучший CTR
-              </strong>
-
-              <small>
-                ${escapeHtml(
-                  bestCtr.name
-                )}
-              </small>
-
-            </div>
-
-            <strong>
-              ${pct(
-                bestCtr.ctr
-              )}
-            </strong>
-
-          </div>
-
-        `
-        : ""
-    }
-  `;
+      )
+      .join("");
 }
 
+function renderOverviewInsights(
+  snapshot
+) {
 
-/* =========================================================
-   CREATIVE SUMMARY
-========================================================= */
-
-function renderCreativeSummary() {
-
-  const summary =
-    DATA.creative_summary;
-
-  if (!summary) {
-    return;
-  }
-
-
-  const priority =
+  const container =
     document.getElementById(
       "priorityAlerts"
     );
 
+  if (
+    !container
+  ) {
+    return;
+  }
 
-  priority.innerHTML = `
+  const campaigns =
+    snapshot.campaigns;
 
-    <article
-      class="alert-card opportunity"
+  if (
+    !campaigns.length
+  ) {
+
+    container.innerHTML =
+      `
+      <div
+        class="note"
+      >
+        Недостаточно данных
+        для сигналов.
+      </div>
+      `;
+
+    return;
+  }
+
+  const s =
+    snapshot.summary;
+
+  const highestSpend =
+    campaigns[0];
+
+  const highestCpc =
+    campaigns
+      .filter(
+        campaign =>
+          campaign.clicks
+          >= 5
+      )
+      .slice()
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          b.avg_cpc
+          -
+          a.avg_cpc
+      )[0];
+
+  const bestCtr =
+    campaigns
+      .filter(
+        campaign =>
+          campaign.clicks
+          >= 10
+      )
+      .slice()
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          b.ctr
+          -
+          a.ctr
+      )[0];
+
+  const cards =
+    [];
+
+  if (
+    highestSpend
+  ) {
+
+    const share =
+      s.spend
+      > 0
+
+        ? highestSpend.spend
+          /
+          s.spend
+          *
+          100
+
+        : 0;
+
+    cards.push(`
+
+      <article
+        class="alert-card warning"
+      >
+
+        <div
+          class="severity"
+        >
+          ОСНОВНОЙ РАСХОД
+        </div>
+
+        <h4>
+          ${
+            escapeHtml(
+              highestSpend.name
+            )
+          }
+        </h4>
+
+        <p>
+          ${
+            money(
+              highestSpend.spend
+            )
+          }
+          —
+          ${
+            share.toFixed(
+              1
+            )
+          }%
+          расходов
+          за выбранный период.
+        </p>
+
+      </article>
+
+    `);
+  }
+
+  if (
+    highestCpc
+  ) {
+
+    const relative =
+      s.avg_cpc
+      > 0
+
+        ? highestCpc.avg_cpc
+          /
+          s.avg_cpc
+
+        : 1;
+
+    cards.push(`
+
+      <article
+        class="
+          alert-card
+          ${
+            relative
+            >= 1.5
+
+              ? "critical"
+
+              : "warning"
+          }
+        "
+      >
+
+        <div
+          class="severity"
+        >
+          ВЫСОКИЙ CPC
+        </div>
+
+        <h4>
+          ${
+            escapeHtml(
+              highestCpc.name
+            )
+          }
+        </h4>
+
+        <p>
+          CPC
+          ${
+            money(
+              highestCpc.avg_cpc
+            )
+          }.
+          Среднее по аккаунту —
+          ${
+            s.avg_cpc
+            > 0
+
+              ? money(
+                  s.avg_cpc
+                )
+
+              : "—"
+          }.
+        </p>
+
+      </article>
+
+    `);
+  }
+
+  if (
+    bestCtr
+  ) {
+
+    cards.push(`
+
+      <article
+        class="alert-card opportunity"
+      >
+
+        <div
+          class="severity"
+        >
+          ЛУЧШИЙ CTR
+        </div>
+
+        <h4>
+          ${
+            escapeHtml(
+              bestCtr.name
+            )
+          }
+        </h4>
+
+        <p>
+          CTR
+          ${
+            pct(
+              bestCtr.ctr
+            )
+          }
+          при
+          ${
+            number(
+              bestCtr.clicks
+            )
+          }
+          кликах.
+        </p>
+
+      </article>
+
+    `);
+  }
+
+  container.innerHTML =
+    cards.join("");
+}
+
+/* =========================================================
+   ALERTS
+========================================================= */
+
+function medianFromSorted(
+  values
+) {
+
+  if (
+    !values.length
+  ) {
+    return 0;
+  }
+
+  const middle =
+    Math.floor(
+      values.length
+      / 2
+    );
+
+  return (
+    values.length
+    % 2
+  )
+    ? values[
+        middle
+      ]
+
+    : (
+        values[
+          middle - 1
+        ]
+        +
+        values[
+          middle
+        ]
+      )
+      /
+      2;
+}
+
+function buildAlerts(
+  snapshot
+) {
+
+  const campaigns =
+    snapshot.campaigns;
+
+  const summary =
+    snapshot.summary;
+
+  const alerts =
+    [];
+
+  if (
+    !campaigns.length
+  ) {
+    return alerts;
+  }
+
+  const spendValues =
+    campaigns
+      .map(
+        campaign =>
+          campaign.spend
+      )
+      .filter(
+        value =>
+          value > 0
+      )
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          a - b
+      );
+
+  const medianSpend =
+    medianFromSorted(
+      spendValues
+    );
+
+  campaigns.forEach(
+    campaign => {
+
+      if (
+        campaign.conversions
+        <= 0
+        &&
+        campaign.clicks
+        >= 20
+        &&
+        campaign.spend
+        >= medianSpend
+      ) {
+
+        alerts.push({
+
+          severity:
+            "critical",
+
+          label:
+            "Критично",
+
+          title:
+            "Расход без конверсий",
+
+          text:
+            `${
+              campaign.name
+            }: ${
+              money(
+                campaign.spend
+              )
+            } расходов, ${
+              number(
+                campaign.clicks
+              )
+            } кликов и 0 конверсий.`,
+
+          meta:
+            `CTR ${
+              pct(
+                campaign.ctr
+              )
+            }`,
+        });
+      }
+
+      if (
+        summary.avg_cpc
+        > 0
+        &&
+        campaign.avg_cpc
+        >
+        summary.avg_cpc
+        *
+        1.4
+        &&
+        campaign.clicks
+        >= 5
+      ) {
+
+        alerts.push({
+
+          severity:
+            "warning",
+
+          label:
+            "Внимание",
+
+          title:
+            "CPC выше среднего",
+
+          text:
+            `${
+              campaign.name
+            }: CPC ${
+              money(
+                campaign.avg_cpc
+              )
+            } против ${
+              money(
+                summary.avg_cpc
+              )
+            } в среднем.`,
+
+          meta:
+            `${
+              number(
+                campaign.clicks
+              )
+            } кликов`,
+        });
+      }
+
+      if (
+        summary.ctr
+        > 0
+        &&
+        campaign.ctr
+        <
+        summary.ctr
+        *
+        0.6
+        &&
+        campaign.impressions
+        >= 1000
+      ) {
+
+        alerts.push({
+
+          severity:
+            "warning",
+
+          label:
+            "Внимание",
+
+          title:
+            "CTR заметно ниже среднего",
+
+          text:
+            `${
+              campaign.name
+            }: CTR ${
+              pct(
+                campaign.ctr
+              )
+            } при среднем ${
+              pct(
+                summary.ctr
+              )
+            }.`,
+
+          meta:
+            `${
+              number(
+                campaign.impressions
+              )
+            } показов`,
+        });
+      }
+    }
+  );
+
+  const bestCtr =
+    campaigns
+      .filter(
+        campaign =>
+          campaign.clicks
+          >= 10
+      )
+      .slice()
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          b.ctr
+          -
+          a.ctr
+      )[0];
+
+  if (
+    bestCtr
+  ) {
+
+    alerts.push({
+
+      severity:
+        "opportunity",
+
+      label:
+        "Возможность",
+
+      title:
+        "Кампания с лучшим CTR",
+
+      text:
+        `${
+          bestCtr.name
+        }: CTR ${
+          pct(
+            bestCtr.ctr
+          )
+        }. Стоит проверить, можно ли масштабировать удачные настройки.`,
+
+      meta:
+        `${
+          money(
+            bestCtr.spend
+          )
+        } расходов`,
+    });
+  }
+
+  return alerts;
+}
+
+function renderAlerts() {
+
+  const container =
+    document.getElementById(
+      "allAlerts"
+    );
+
+  if (
+    !container
+  ) {
+    return;
+  }
+
+  const alerts =
+    buildAlerts(
+      getOverviewSnapshot()
+    );
+
+  const filtered =
+    ALERT_FILTER
+    === "all"
+
+      ? alerts
+
+      : alerts.filter(
+          alert =>
+            alert.severity
+            === ALERT_FILTER
+        );
+
+  const badge =
+    document.getElementById(
+      "navAlertCount"
+    );
+
+  if (
+    badge
+  ) {
+
+    badge.textContent =
+      number(
+        alerts.length
+      );
+  }
+
+  document
+    .querySelectorAll(
+      "#alertFilters [data-filter]"
+    )
+    .forEach(
+      button => {
+
+        button.classList.toggle(
+          "active",
+          button.dataset.filter
+          === ALERT_FILTER
+        );
+      }
+    );
+
+  if (
+    !filtered.length
+  ) {
+
+    container.innerHTML =
+      `
+      <div
+        class="note"
+      >
+        По выбранному фильтру
+        сигналов нет.
+      </div>
+      `;
+
+    return;
+  }
+
+  container.innerHTML =
+    filtered
+      .map(
+        alert => `
+
+          <article
+            class="
+              alert-row
+              ${
+                alert.severity
+              }
+            "
+          >
+
+            <div
+              class="severity"
+            >
+              ${
+                escapeHtml(
+                  alert.label
+                )
+              }
+            </div>
+
+            <div>
+
+              <h4>
+                ${
+                  escapeHtml(
+                    alert.title
+                  )
+                }
+              </h4>
+
+              <p>
+                ${
+                  escapeHtml(
+                    alert.text
+                  )
+                }
+              </p>
+
+            </div>
+
+            <div
+              class="meta"
+            >
+              ${
+                escapeHtml(
+                  alert.meta
+                )
+              }
+            </div>
+
+          </article>
+
+        `
+      )
+      .join("");
+}
+
+/* =========================================================
+   BUDGET
+========================================================= */
+
+function budgetRecommendation(
+  campaign,
+  summary
+) {
+
+  if (
+    campaign.conversions
+    <= 0
+    &&
+    campaign.clicks
+    >= 20
+  ) {
+
+    return (
+      "Проверить: расход без конверсий"
+    );
+  }
+
+  if (
+    campaign.cpa
+    > 0
+    &&
+    summary.cpa
+    > 0
+    &&
+    campaign.cpa
+    <
+    summary.cpa
+    *
+    0.8
+  ) {
+
+    return (
+      "Потенциал для масштабирования"
+    );
+  }
+
+  if (
+    summary.avg_cpc
+    > 0
+    &&
+    campaign.avg_cpc
+    >
+    summary.avg_cpc
+    *
+    1.3
+  ) {
+
+    return (
+      "Проверить высокий CPC"
+    );
+  }
+
+  if (
+    summary.ctr
+    > 0
+    &&
+    campaign.ctr
+    >
+    summary.ctr
+    *
+    1.25
+  ) {
+
+    return (
+      "Сильный CTR"
+    );
+  }
+
+  return (
+    "Без явного сигнала"
+  );
+}
+
+function renderBudgetTable() {
+
+  const container =
+    document.getElementById(
+      "budgetTable"
+    );
+
+  if (
+    !container
+  ) {
+    return;
+  }
+
+  const snapshot =
+    getOverviewSnapshot();
+
+  const campaigns =
+    snapshot.campaigns;
+
+  const summary =
+    snapshot.summary;
+
+  if (
+    !campaigns.length
+  ) {
+
+    container.innerHTML =
+      `
+      <div
+        class="note"
+      >
+        Нет данных
+        для анализа бюджета.
+      </div>
+      `;
+
+    return;
+  }
+
+  container.innerHTML = `
+
+    <div
+      style="
+        overflow:auto;
+      "
     >
 
-      <div class="severity">
-        УСПЕШНЫЕ
-      </div>
+      <table
+        class="table"
+      >
 
-      <h4>
-        ${summary.successful}
-        креативов
-      </h4>
+        <thead>
 
-      <p>
-        Score 70+ относительно
-        других визуалов
-        той же кампании.
-      </p>
+          <tr>
 
-    </article>
+            <th>
+              Кампания
+            </th>
 
+            <th>
+              Расход
+            </th>
 
-    <article
-      class="alert-card warning"
-    >
+            <th>
+              Доля
+            </th>
 
-      <div class="severity">
-        ВЫГОРАНИЕ
-      </div>
+            <th>
+              CTR
+            </th>
 
-      <h4>
-        ${summary.fatigue}
-        креативов
-      </h4>
+            <th>
+              CPC
+            </th>
 
-      <p>
-        CTR падает,
-        одновременно CPC растёт.
-      </p>
+            <th>
+              Конверсии
+            </th>
 
-    </article>
+            <th>
+              CPA
+            </th>
 
+            <th>
+              Сигнал
+            </th>
 
-    <article
-      class="alert-card critical"
-    >
+          </tr>
 
-      <div class="severity">
-        СЛАБЫЕ
-      </div>
+        </thead>
 
-      <h4>
-        ${summary.weak}
-        креативов
-      </h4>
+        <tbody>
 
-      <p>
-        Score ниже 45.
-      </p>
+          ${
+            campaigns
+              .map(
+                campaign => {
 
-    </article>
+                  const share =
+                    summary.spend
+                    > 0
+
+                      ? campaign.spend
+                        /
+                        summary.spend
+                        *
+                        100
+
+                      : 0;
+
+                  return `
+
+                    <tr>
+
+                      <td>
+                        ${
+                          escapeHtml(
+                            campaign.name
+                          )
+                        }
+                      </td>
+
+                      <td>
+                        ${
+                          money(
+                            campaign.spend
+                          )
+                        }
+                      </td>
+
+                      <td>
+                        ${
+                          share.toFixed(
+                            1
+                          )
+                        }%
+                      </td>
+
+                      <td>
+                        ${
+                          pct(
+                            campaign.ctr
+                          )
+                        }
+                      </td>
+
+                      <td>
+                        ${
+                          campaign.avg_cpc
+                          > 0
+
+                            ? money(
+                                campaign.avg_cpc
+                              )
+
+                            : "—"
+                        }
+                      </td>
+
+                      <td>
+                        ${
+                          metricNumber(
+                            campaign.conversions
+                          )
+                        }
+                      </td>
+
+                      <td>
+                        ${
+                          campaign.cpa
+                          > 0
+
+                            ? money(
+                                campaign.cpa
+                              )
+
+                            : "—"
+                        }
+                      </td>
+
+                      <td>
+                        ${
+                          escapeHtml(
+                            budgetRecommendation(
+                              campaign,
+                              summary
+                            )
+                          )
+                        }
+                      </td>
+
+                    </tr>
+
+                  `;
+                }
+              )
+              .join("")
+          }
+
+        </tbody>
+
+      </table>
+
+    </div>
 
   `;
 }
 
-
 /* =========================================================
-   CREATIVE CARDS
+   CREATIVES
 ========================================================= */
+
+function creativeStatus(
+  status
+) {
+
+  const map = {
+
+    successful: {
+      icon:
+        "🟢",
+      label:
+        "Успешный",
+    },
+
+    normal: {
+      icon:
+        "🟡",
+      label:
+        "Средний",
+    },
+
+    weak: {
+      icon:
+        "🔴",
+      label:
+        "Слабый",
+    },
+
+    fatigue: {
+      icon:
+        "🔥",
+      label:
+        "Выгорает",
+    },
+
+    improving: {
+      icon:
+        "🚀",
+      label:
+        "Улучшается",
+    },
+
+    insufficient_data: {
+      icon:
+        "⚪",
+      label:
+        "Мало данных",
+    },
+
+    no_peers: {
+      icon:
+        "⚪",
+      label:
+        "Не с чем сравнить",
+    },
+
+    unattributable: {
+      icon:
+        "⚫",
+      label:
+        "Нельзя определить",
+    },
+  };
+
+  return (
+    map[
+      status
+    ]
+    ||
+    map.normal
+  );
+}
 
 function renderCreatives() {
 
@@ -911,6 +2660,11 @@ function renderCreatives() {
       "creativeGrid"
     );
 
+  if (
+    !container
+  ) {
+    return;
+  }
 
   const heading =
     document.querySelector(
@@ -922,41 +2676,42 @@ function renderCreatives() {
       "#creatives .section-head p"
     );
 
-
-  if (heading) {
+  if (
+    heading
+  ) {
 
     heading.textContent =
       "Creative Intelligence";
   }
 
-
-  if (subtitle) {
+  if (
+    subtitle
+  ) {
 
     subtitle.textContent =
-      (
-        "Какие именно картинки "
-        + "и видео работают лучше."
-      );
+      "Какие именно картинки и видео работают лучше.";
   }
 
-
   const creatives =
-    DATA.creatives || [];
+    DATA.creatives
+    || [];
 
+  if (
+    !creatives.length
+  ) {
 
-  if (!creatives.length) {
-
-    container.innerHTML = `
-
-      <div class="note">
+    container.innerHTML =
+      `
+      <div
+        class="note"
+      >
         Визуальные креативы
         не найдены.
       </div>
-    `;
+      `;
 
     return;
   }
-
 
   container.innerHTML =
     creatives
@@ -965,7 +2720,6 @@ function renderCreatives() {
       )
       .join("");
 }
-
 
 function creativeCard(
   creative
@@ -976,82 +2730,91 @@ function creativeCard(
       creative.status
     );
 
-
   const score =
-    creative.score === null
-      || creative.score
-      === undefined
+    creative.score
+    === null
+    ||
+    creative.score
+    === undefined
+
       ? "—"
+
       : creative.score;
 
-
   const trend =
-    creative.trend || {};
-
+    creative.trend
+    || {};
 
   const preview =
     creative.preview_url
-    || creative.thumbnail_url
-    || creative.original_url
-    || null;
-
-
-  const shared =
-    creative.shared_ad_ids
-    || [];
-
+    ||
+    creative.thumbnail_url
+    ||
+    creative.original_url
+    ||
+    null;
 
   const ads =
     creative.ad_ids
     || [];
 
+  const attribution =
+    creative.attribution
+    || "";
 
-  const attributionNote =
+  let attributionNote =
+    "";
+
+  if (
     creative.status
-      === "unattributable"
+    === "unattributable"
+  ) {
 
-      ? `
-        <div
-          style="
-            margin-top:12px;
-            padding:10px;
-            border-radius:8px;
-            background:#161b26;
-            font-size:10px;
-            line-height:1.5;
-            color:#aab9c9;
-          "
-        >
-          В объявлении несколько
-          визуалов. Яндекс отдаёт
-          общую статистику объявления,
-          поэтому определить победителя
-          нельзя.
-        </div>
-      `
+    attributionNote = `
 
-      : shared.length
+      <div
+        style="
+          margin-top:12px;
+          padding:10px;
+          border-radius:8px;
+          background:#161b26;
+          font-size:10px;
+          line-height:1.5;
+          color:#aab9c9;
+        "
+      >
+        В объявлении несколько визуалов.
+        Яндекс отдаёт общую статистику объявления,
+        поэтому надёжно распределить результат нельзя.
+      </div>
 
-      ? `
-        <div
-          style="
-            margin-top:12px;
-            padding:10px;
-            border-radius:8px;
-            background:#161b26;
-            font-size:10px;
-            color:#aab9c9;
-          "
-        >
-          Часть показов этого креатива
-          исключена из Score, поскольку
-          она относится к объявлениям
-          с несколькими ассетами.
-        </div>
-      `
+    `;
 
-      : "";
+  } else if (
+    attribution
+    === "proxy"
+  ) {
 
+    attributionNote = `
+
+      <div
+        style="
+          margin-top:12px;
+          padding:10px;
+          border-radius:8px;
+          background:#0a1726;
+          font-size:10px;
+          line-height:1.5;
+          color:#8ea2bb;
+        "
+      >
+        Оценка proxy:
+        статистика объявления
+        с единственным визуальным ассетом.
+      </div>
+
+    `;
+  }
 
   return `
 
@@ -1082,9 +2845,11 @@ function creativeCard(
             >
 
               <img
-                src="${escapeAttribute(
-                  preview
-                )}"
+                src="${
+                  escapeAttribute(
+                    preview
+                  )
+                }"
                 alt="Creative preview"
                 loading="lazy"
                 style="
@@ -1134,37 +2899,47 @@ function creativeCard(
               margin-bottom:4px;
             "
           >
-            ${escapeHtml(
-              creative.kind
-              === "image"
-                ? "IMAGE"
-                : creative.kind
-                  === "video"
-                  ? "VIDEO"
-                  : "CREATIVE"
-            )}
+            ${
+              escapeHtml(
+
+                creative.kind
+                === "image"
+
+                  ? "IMAGE"
+
+                  : creative.kind
+                    === "video"
+
+                    ? "VIDEO"
+
+                    : "CREATIVE"
+              )
+            }
           </div>
 
 
           <h4>
             ${
               escapeHtml(
+
                 creative.name
-                || (
+
+                ||
+
+                (
                   creative.kind
                   === "image"
 
-                  ? (
-                    "Image "
-                    + shorten(
-                      creative.asset_id
-                    )
-                  )
+                    ? `Image ${
+                        shorten(
+                          creative.asset_id
+                        )
+                      }`
 
-                  : (
-                    "Creative "
-                    + creative.asset_id
-                  )
+                    : `Creative ${
+                        creative.asset_id
+                        || ""
+                      }`
                 )
               )
             }
@@ -1191,9 +2966,12 @@ function creativeCard(
           line-height:1.45;
         "
       >
-        ${escapeHtml(
-          creative.campaign_name
-        )}
+        ${
+          escapeHtml(
+            creative.campaign_name
+            || ""
+          )
+        }
       </div>
 
 
@@ -1206,20 +2984,32 @@ function creativeCard(
         "
       >
 
-        ${pill(
-          state.icon
-          + " "
-          + state.label
-        )}
+        ${
+          pill(
+            `${
+              state.icon
+            } ${
+              state.label
+            }`
+          )
+        }
 
-        ${pill(
-          creative.network
-        )}
+        ${
+          pill(
+            creative.network
+            || "—"
+          )
+        }
 
-        ${pill(
-          creative.asset_type
-          || creative.kind
-        )}
+        ${
+          pill(
+            creative.asset_type
+            ||
+            creative.kind
+            ||
+            "—"
+          )
+        }
 
       </div>
 
@@ -1231,33 +3021,47 @@ function creativeCard(
         "
       >
 
-        ${miniStat(
-          "CTR",
-          pct(
-            creative.ctr
+        ${
+          miniStat(
+            "CTR",
+            pct(
+              creative.ctr
+            )
           )
-        )}
+        }
 
-        ${miniStat(
-          "CPC",
-          money(
+        ${
+          miniStat(
+            "CPC",
+
             creative.avg_cpc
-          )
-        )}
+            > 0
 
-        ${miniStat(
-          "Клики",
-          number(
-            creative.clicks
-          )
-        )}
+              ? money(
+                  creative.avg_cpc
+                )
 
-        ${miniStat(
-          "Расход",
-          money(
-            creative.spend
+              : "—"
           )
-        )}
+        }
+
+        ${
+          miniStat(
+            "Клики",
+            number(
+              creative.clicks
+            )
+          )
+        }
+
+        ${
+          miniStat(
+            "Расход",
+            money(
+              creative.spend
+            )
+          )
+        }
 
       </div>
 
@@ -1265,37 +3069,44 @@ function creativeCard(
       ${
         creative.baseline_ctr
         !== undefined
+        &&
+        creative.baseline_ctr
+        !== null
 
-        ? `
+          ? `
 
-          <div
-            style="
-              margin-top:14px;
-              padding-top:12px;
-              border-top:1px solid #20354e;
-              font-size:10px;
-            "
-          >
+            <div
+              style="
+                margin-top:14px;
+                padding-top:12px;
+                border-top:1px solid #20354e;
+                font-size:10px;
+              "
+            >
 
-            ${comparisonRow(
-              "CTR",
-              creative.ctr,
-              creative.baseline_ctr,
-              "%"
-            )}
+              ${
+                comparisonRow(
+                  "CTR",
+                  creative.ctr,
+                  creative.baseline_ctr,
+                  "%"
+                )
+              }
 
-            ${comparisonRow(
-              "CPC",
-              creative.avg_cpc,
-              creative.baseline_cpc,
-              "₽"
-            )}
+              ${
+                comparisonRow(
+                  "CPC",
+                  creative.avg_cpc,
+                  creative.baseline_cpc,
+                  "₽"
+                )
+              }
 
-          </div>
+            </div>
 
-        `
+          `
 
-        : ""
+          : ""
       }
 
 
@@ -1307,26 +3118,32 @@ function creativeCard(
         "
       >
 
-        ${trendRow(
-          "CTR 7 дней",
-          trend.ctr_change,
-          false
-        )}
+        ${
+          trendRow(
+            "CTR 7 дней",
+            trend.ctr_change,
+            false
+          )
+        }
 
-        ${trendRow(
-          "CPC 7 дней",
-          trend.cpc_change,
-          true
-        )}
+        ${
+          trendRow(
+            "CPC 7 дней",
+            trend.cpc_change,
+            true
+          )
+        }
 
       </div>
 
 
       <p>
-        ${escapeHtml(
-          creative.reason
-          || ""
-        )}
+        ${
+          escapeHtml(
+            creative.reason
+            || ""
+          )
+        }
       </p>
 
 
@@ -1338,196 +3155,21 @@ function creativeCard(
         "
       >
         Используется в
-        ${ads.length}
+        ${
+          ads.length
+        }
         объявлениях
       </div>
 
 
-      ${attributionNote}
+      ${
+        attributionNote
+      }
 
     </article>
+
   `;
 }
-
-
-/* =========================================================
-   KEYWORDS
-========================================================= */
-
-function renderKeywords() {
-
-  const container =
-    document.getElementById(
-      "keywordsTable"
-    );
-
-  if (!container) {
-    return;
-  }
-
-  const keywords =
-    [...(DATA.keywords || [])];
-
-
-  if (!keywords.length) {
-
-    container.innerHTML = `
-      <div class="note">
-        Данные по ключевым фразам
-        пока не получены.
-      </div>
-    `;
-
-    return;
-  }
-
-
-  keywords.sort(
-    (a, b) =>
-      (b.conversions || 0)
-      -
-      (a.conversions || 0)
-  );
-
-
-  container.innerHTML = `
-
-    <table class="table">
-
-      <thead>
-        <tr>
-          <th>Ключевая фраза</th>
-          <th>Конверсии</th>
-          <th>CPA</th>
-          <th>Клики</th>
-          <th>CTR</th>
-          <th>Статус</th>
-        </tr>
-      </thead>
-
-      <tbody>
-
-        ${
-          keywords.map(
-            keyword => `
-
-            <tr>
-
-              <td>
-                ${escapeHtml(
-                  keyword.keyword
-                )}
-              </td>
-
-              <td>
-                ${number(
-                  keyword.conversions
-                )}
-              </td>
-
-              <td>
-                ${
-                  keyword.cpa
-                    ? money(keyword.cpa)
-                    : "—"
-                }
-              </td>
-
-              <td>
-                ${number(
-                  keyword.clicks
-                )}
-              </td>
-
-              <td>
-                ${pct(
-                  keyword.ctr
-                )}
-              </td>
-
-              <td>
-                ${
-                  keyword.status === "winner"
-                    ? "🟢 Эффективная"
-                    :
-                  keyword.status === "weak"
-                    ? "🔴 Слабая"
-                    :
-                  "🟡 Мало данных"
-                }
-              </td>
-
-            </tr>
-
-            `
-          ).join("")
-        }
-
-      </tbody>
-
-    </table>
-  `;
-}
-
-
-/* =========================================================
-   UI HELPERS
-========================================================= */
-
-function creativeStatus(
-  status
-) {
-
-  const map = {
-
-    successful: {
-      icon: "🟢",
-      label: "Успешный",
-    },
-
-    normal: {
-      icon: "🟡",
-      label: "Средний",
-    },
-
-    weak: {
-      icon: "🔴",
-      label: "Слабый",
-    },
-
-    fatigue: {
-      icon: "🔥",
-      label: "Выгорает",
-    },
-
-    improving: {
-      icon: "🚀",
-      label: "Улучшается",
-    },
-
-    insufficient_data: {
-      icon: "⚪",
-      label: "Мало данных",
-    },
-
-    no_peers: {
-      icon: "⚪",
-      label: "Не с чем сравнить",
-    },
-
-    unattributable: {
-      icon: "⚫",
-      label: "Нельзя определить",
-    },
-  };
-
-
-  return (
-    map[status]
-    || map.normal
-  );
-}
-
 
 function miniStat(
   label,
@@ -1536,22 +3178,34 @@ function miniStat(
 
   return `
 
-    <div class="mini">
+    <div
+      class="mini"
+    >
 
       <span>
-        ${escapeHtml(label)}
+        ${
+          escapeHtml(
+            label
+          )
+        }
       </span>
 
       <strong>
-        ${escapeHtml(value)}
+        ${
+          escapeHtml(
+            value
+          )
+        }
       </strong>
 
     </div>
+
   `;
 }
 
-
-function pill(text) {
+function pill(
+  text
+) {
 
   return `
 
@@ -1563,11 +3217,15 @@ function pill(text) {
         font-size:9px;
       "
     >
-      ${escapeHtml(text)}
+      ${
+        escapeHtml(
+          text
+        )
+      }
     </span>
+
   `;
 }
-
 
 function trendRow(
   title,
@@ -1575,29 +3233,40 @@ function trendRow(
   inverse
 ) {
 
-  value =
-    Number(value || 0);
-
+  const numeric =
+    Number(
+      value
+      || 0
+    );
 
   const good =
     inverse
-      ? value < 0
-      : value > 0;
 
+      ? numeric
+        < 0
+
+      : numeric
+        > 0;
 
   const bad =
     inverse
-      ? value > 0
-      : value < 0;
 
+      ? numeric
+        > 0
+
+      : numeric
+        < 0;
 
   const color =
     good
-      ? "#52d39a"
-      : bad
-        ? "#ff6b72"
-        : "#8ea2bb";
 
+      ? "#52d39a"
+
+      : bad
+
+        ? "#ff6b72"
+
+        : "#8ea2bb";
 
   return `
 
@@ -1615,9 +3284,12 @@ function trendRow(
           color:#8ea2bb;
         "
       >
-        ${escapeHtml(title)}
+        ${
+          escapeHtml(
+            title
+          )
+        }
       </span>
-
 
       <strong
         style="
@@ -1625,16 +3297,23 @@ function trendRow(
         "
       >
         ${
-          value > 0
+          numeric
+          > 0
+
             ? "+"
+
             : ""
-        }${value.toFixed(1)}%
+        }${
+          numeric.toFixed(
+            1
+          )
+        }%
       </strong>
 
     </div>
+
   `;
 }
-
 
 function comparisonRow(
   label,
@@ -1643,24 +3322,17 @@ function comparisonRow(
   suffix
 ) {
 
-  value =
-    Number(value || 0);
+  const numeric =
+    Number(
+      value
+      || 0
+    );
 
-  baseline =
-    Number(baseline || 0);
-
-
-  const difference =
-    baseline
-      ? (
-          (
-            value - baseline
-          )
-          / baseline
-          * 100
-        )
-      : 0;
-
+  const base =
+    Number(
+      baseline
+      || 0
+    );
 
   return `
 
@@ -1668,6 +3340,7 @@ function comparisonRow(
       style="
         display:flex;
         justify-content:space-between;
+        gap:10px;
         margin-top:6px;
       "
     >
@@ -1677,96 +3350,899 @@ function comparisonRow(
           color:#8ea2bb;
         "
       >
-        ${escapeHtml(label)}
+        ${
+          escapeHtml(
+            label
+          )
+        }
         vs медиана
       </span>
 
-
       <strong>
         ${
-          value.toFixed(2)
+          numeric.toFixed(
+            2
+          )
         }${suffix}
         /
         ${
-          baseline.toFixed(2)
+          base.toFixed(
+            2
+          )
         }${suffix}
       </strong>
 
     </div>
+
   `;
 }
-
 
 function shorten(
   value
 ) {
 
   const text =
-    String(value || "");
-
-  if (text.length <= 12) {
-    return text;
-  }
+    String(
+      value
+      || ""
+    );
 
   return (
-    text.slice(0, 6)
-    + "…"
-    + text.slice(-5)
+    text.length
+    <= 12
+  )
+    ? text
+
+    : `${
+        text.slice(
+          0,
+          6
+        )
+      }…${
+        text.slice(
+          -5
+        )
+      }`;
+}
+
+/* =========================================================
+   KEYWORDS
+========================================================= */
+
+function keywordStatus(
+  status
+) {
+
+  const map = {
+
+    winner: {
+      icon:
+        "🟢",
+      label:
+        "Лидер",
+    },
+
+    efficient: {
+      icon:
+        "🟢",
+      label:
+        "Эффективная",
+    },
+
+    converting: {
+      icon:
+        "🟡",
+      label:
+        "Есть конверсии",
+    },
+
+    no_conversions: {
+      icon:
+        "🔴",
+      label:
+        "Нет конверсий",
+    },
+
+    needs_data: {
+      icon:
+        "⚪",
+      label:
+        "Мало данных",
+    },
+
+    weak: {
+      icon:
+        "🔴",
+      label:
+        "Слабая",
+    },
+  };
+
+  return (
+    map[
+      status
+    ]
+    ||
+    {
+      icon:
+        "⚪",
+      label:
+        "Без оценки",
+    }
   );
 }
 
+function getKeywordSummary(
+  keywords
+) {
+
+  const backend =
+    DATA.keyword_summary
+    || {};
+
+  const totalConversions =
+    keywords.reduce(
+      (
+        sum,
+        item
+      ) =>
+        sum
+        +
+        Number(
+          item.conversions
+          || 0
+        ),
+      0
+    );
+
+  const totalCost =
+    keywords.reduce(
+      (
+        sum,
+        item
+      ) =>
+        sum
+        +
+        Number(
+          item.cost
+          ??
+          item.spend
+          ??
+          0
+        ),
+      0
+    );
+
+  const totalClicks =
+    keywords.reduce(
+      (
+        sum,
+        item
+      ) =>
+        sum
+        +
+        Number(
+          item.clicks
+          || 0
+        ),
+      0
+    );
+
+  const top =
+    keywords
+      .filter(
+        item =>
+          Number(
+            item.conversions
+            || 0
+          ) > 0
+      )
+      .slice()
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          Number(
+            b.conversions
+            || 0
+          )
+          -
+          Number(
+            a.conversions
+            || 0
+          )
+      )[0];
+
+  return {
+
+    total_keywords:
+      backend.total_keywords
+      ??
+      keywords.length,
+
+    with_conversions:
+      backend.with_conversions
+      ??
+      keywords.filter(
+        item =>
+          Number(
+            item.conversions
+            || 0
+          ) > 0
+      ).length,
+
+    total_conversions:
+      backend.total_conversions
+      ??
+      totalConversions,
+
+    total_cost:
+      backend.total_cost
+      ??
+      totalCost,
+
+    avg_cpa:
+      backend.avg_cpa
+      ??
+      (
+        totalConversions
+        > 0
+
+          ? totalCost
+            /
+            totalConversions
+
+          : 0
+      ),
+
+    conversion_rate:
+      backend.conversion_rate
+      ??
+      (
+        totalClicks
+        > 0
+
+          ? totalConversions
+            /
+            totalClicks
+            *
+            100
+
+          : 0
+      ),
+
+    top_keyword:
+      backend.top_keyword
+      ??
+      top?.keyword
+      ??
+      null,
+
+    top_keyword_conversions:
+      backend.top_keyword_conversions
+      ??
+      top?.conversions
+      ??
+      0,
+  };
+}
+
+function renderKeywords() {
+
+  const tableContainer =
+    document.getElementById(
+      "keywordsTable"
+    );
+
+  const kpiContainer =
+    document.getElementById(
+      "keywordKpis"
+    );
+
+  const noteContainer =
+    document.getElementById(
+      "keywordNote"
+    );
+
+  if (
+    !tableContainer
+  ) {
+    return;
+  }
+
+  const keywords =
+    [
+      ...(
+        DATA.keywords
+        || []
+      )
+    ];
+
+  const summary =
+    getKeywordSummary(
+      keywords
+    );
+
+  if (
+    kpiContainer
+  ) {
+
+    const items = [
+
+      [
+        "Ключевых фраз",
+        number(
+          summary.total_keywords
+        ),
+      ],
+
+      [
+        "С конверсиями",
+        number(
+          summary.with_conversions
+        ),
+      ],
+
+      [
+        "Конверсии",
+        metricNumber(
+          summary.total_conversions
+        ),
+      ],
+
+      [
+        "Средний CPA",
+
+        Number(
+          summary.avg_cpa
+          || 0
+        ) > 0
+
+          ? money(
+              summary.avg_cpa
+            )
+
+          : "—",
+      ],
+    ];
+
+    kpiContainer.innerHTML =
+      items
+        .map(
+          (
+            [
+              label,
+              value
+            ]
+          ) => `
+
+            <div
+              class="kpi"
+            >
+
+              <div
+                class="label"
+              >
+                ${
+                  escapeHtml(
+                    label
+                  )
+                }
+              </div>
+
+              <div
+                class="value"
+              >
+                ${
+                  escapeHtml(
+                    value
+                  )
+                }
+              </div>
+
+              <div
+                class="delta neutral"
+              >
+                за ${
+                  Number(
+                    DATA.meta
+                      ?.period_days
+                    ||
+                    60
+                  )
+                } дней
+              </div>
+
+            </div>
+
+          `
+        )
+        .join("");
+  }
+
+  if (
+    noteContainer
+  ) {
+
+    noteContainer.innerHTML =
+      summary.top_keyword
+
+        ? `
+
+          <strong>
+            Лидер по конверсиям:
+          </strong>
+
+          ${
+            escapeHtml(
+              summary.top_keyword
+            )
+          }
+          —
+          ${
+            metricNumber(
+              summary.top_keyword_conversions
+            )
+          }
+          конверсий.
+
+          Средний CPA
+          по ключевым фразам —
+          ${
+            summary.avg_cpa
+            > 0
+
+              ? money(
+                  summary.avg_cpa
+                )
+
+              : "—"
+          }.
+
+        `
+
+        : `
+
+          В отчёте пока нет
+          ключевых фраз
+          с зарегистрированными
+          конверсиями.
+
+        `;
+  }
+
+  if (
+    !keywords.length
+  ) {
+
+    tableContainer.innerHTML =
+      `
+      <div
+        class="note"
+      >
+        Ключевые фразы
+        не найдены
+        или по ним пока
+        нет статистики.
+      </div>
+      `;
+
+    return;
+  }
+
+  keywords.sort(
+    (
+      a,
+      b
+    ) => {
+
+      const diff =
+        Number(
+          b.conversions
+          || 0
+        )
+        -
+        Number(
+          a.conversions
+          || 0
+        );
+
+      if (
+        diff !== 0
+      ) {
+        return diff;
+      }
+
+      const aCpa =
+        Number(
+          a.cpa
+          || 0
+        );
+
+      const bCpa =
+        Number(
+          b.cpa
+          || 0
+        );
+
+      if (
+        aCpa > 0
+        &&
+        bCpa > 0
+      ) {
+
+        return (
+          aCpa
+          -
+          bCpa
+        );
+      }
+
+      return (
+        Number(
+          b.clicks
+          || 0
+        )
+        -
+        Number(
+          a.clicks
+          || 0
+        )
+      );
+    }
+  );
+
+  tableContainer.innerHTML = `
+
+    <table
+      class="table"
+    >
+
+      <thead>
+
+        <tr>
+
+          <th>
+            #
+          </th>
+
+          <th>
+            Ключевая фраза
+          </th>
+
+          <th>
+            Конверсии
+          </th>
+
+          <th>
+            Доля
+          </th>
+
+          <th>
+            CPA
+          </th>
+
+          <th>
+            CR
+          </th>
+
+          <th>
+            Клики
+          </th>
+
+          <th>
+            CTR
+          </th>
+
+          <th>
+            Расход
+          </th>
+
+          <th>
+            Кампании
+          </th>
+
+          <th>
+            Статус
+          </th>
+
+        </tr>
+
+      </thead>
+
+      <tbody>
+
+        ${
+          keywords
+            .map(
+              (
+                keyword,
+                index
+              ) => {
+
+                const state =
+                  keywordStatus(
+                    keyword.status
+                  );
+
+                const conversions =
+                  Number(
+                    keyword.conversions
+                    || 0
+                  );
+
+                const totalConversions =
+                  Number(
+                    summary.total_conversions
+                    || 0
+                  );
+
+                const share =
+                  keyword.conversion_share
+                  !== undefined
+
+                    ? Number(
+                        keyword.conversion_share
+                        || 0
+                      )
+
+                    : (
+                        totalConversions
+                        > 0
+
+                          ? conversions
+                            /
+                            totalConversions
+                            *
+                            100
+
+                          : 0
+                      );
+
+                const cr =
+                  keyword.conversion_rate
+                  !== undefined
+
+                    ? Number(
+                        keyword.conversion_rate
+                        || 0
+                      )
+
+                    : (
+                        Number(
+                          keyword.clicks
+                          || 0
+                        ) > 0
+
+                          ? conversions
+                            /
+                            Number(
+                              keyword.clicks
+                            )
+                            *
+                            100
+
+                          : 0
+                      );
+
+                const campaignNames =
+                  Array.isArray(
+                    keyword.campaign_names
+                  )
+
+                    ? keyword.campaign_names
+
+                    : (
+                        keyword.campaign_name
+
+                          ? [
+                              keyword.campaign_name
+                            ]
+
+                          : []
+                      );
+
+                return `
+
+                  <tr>
+
+                    <td>
+                      ${
+                        keyword.rank
+                        ||
+                        index + 1
+                      }
+                    </td>
+
+                    <td>
+
+                      <strong>
+                        ${
+                          escapeHtml(
+                            keyword.keyword
+                            || "—"
+                          )
+                        }
+                      </strong>
+
+                    </td>
+
+                    <td>
+                      ${
+                        metricNumber(
+                          conversions
+                        )
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        share.toFixed(
+                          2
+                        )
+                      }%
+                    </td>
+
+                    <td>
+                      ${
+                        Number(
+                          keyword.cpa
+                          || 0
+                        ) > 0
+
+                          ? money(
+                              keyword.cpa
+                            )
+
+                          : "—"
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        pct(
+                          cr
+                        )
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        number(
+                          keyword.clicks
+                        )
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        pct(
+                          keyword.ctr
+                        )
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        money(
+                          keyword.cost
+                          ??
+                          keyword.spend
+                          ??
+                          0
+                        )
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        escapeHtml(
+
+                          campaignNames.length
+
+                            ? campaignNames.join(
+                                ", "
+                              )
+
+                            : "—"
+                        )
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        escapeHtml(
+                          `${
+                            state.icon
+                          } ${
+                            state.label
+                          }`
+                        )
+                      }
+                    </td>
+
+                  </tr>
+
+                `;
+              }
+            )
+            .join("")
+        }
+
+      </tbody>
+
+    </table>
+
+  `;
+}
 
 /* =========================================================
-   NAVIGATION
+   NAVIGATION / EVENTS
 ========================================================= */
 
-document
-  .querySelectorAll(
-    ".nav"
-  )
-  .forEach(
-    button => {
+document.addEventListener(
+  "click",
+  event => {
 
-      button.addEventListener(
-        "click",
-        () => {
-
-          showSection(
-            button.dataset.section
-          );
-        }
+    const navButton =
+      event.target.closest(
+        ".nav[data-section]"
       );
-    }
-  );
 
+    if (
+      navButton
+    ) {
 
-document
-  .querySelectorAll(
-    "[data-goto]"
-  )
-  .forEach(
-    button => {
-
-      button.addEventListener(
-        "click",
-        () => {
-
-          showSection(
-            button.dataset.goto
-          );
-        }
+      showSection(
+        navButton.dataset.section
       );
-    }
-  );
 
+      return;
+    }
+
+    const gotoButton =
+      event.target.closest(
+        "[data-goto]"
+      );
+
+    if (
+      gotoButton
+    ) {
+
+      showSection(
+        gotoButton.dataset.goto
+      );
+
+      return;
+    }
+
+    const filterButton =
+      event.target.closest(
+        "#alertFilters [data-filter]"
+      );
+
+    if (
+      filterButton
+    ) {
+
+      ALERT_FILTER =
+        filterButton.dataset.filter
+        || "all";
+
+      renderAlerts();
+    }
+  }
+);
 
 const refreshButton =
   document.getElementById(
     "refreshBtn"
   );
 
-
-if (refreshButton) {
+if (
+  refreshButton
+) {
 
   refreshButton.addEventListener(
     "click",
@@ -1777,20 +4253,79 @@ if (refreshButton) {
           "marketingRadarPassword"
         );
 
-      if (!password) {
+      if (
+        !password
+      ) {
         return;
       }
 
-      DATA =
-        await loadEncryptedReport(
-          password
+      refreshButton.disabled =
+        true;
+
+      const oldText =
+        refreshButton.textContent;
+
+      refreshButton.textContent =
+        "Обновляем...";
+
+      try {
+
+        DATA =
+          await loadEncryptedReport(
+            password
+          );
+
+        render();
+
+      } catch (error) {
+
+        console.error(
+          error
         );
 
-      render();
+        alert(
+          "Не удалось обновить данные."
+        );
+
+      } finally {
+
+        refreshButton.disabled =
+          false;
+
+        refreshButton.textContent =
+          oldText;
+      }
     }
   );
 }
 
+const periodSelect =
+  document.getElementById(
+    "periodSelect"
+  );
+
+if (
+  periodSelect
+) {
+
+  periodSelect.addEventListener(
+    "change",
+    () => {
+
+      if (
+        !DATA
+      ) {
+        return;
+      }
+
+      renderOverview();
+
+      renderAlerts();
+
+      renderBudgetTable();
+    }
+  );
+}
 
 function showSection(
   id
@@ -1809,7 +4344,6 @@ function showSection(
       }
     );
 
-
   document
     .querySelectorAll(
       ".nav"
@@ -1825,66 +4359,95 @@ function showSection(
       }
     );
 
-
   const target =
-    document.getElementById(id);
+    document.getElementById(
+      id
+    );
 
-
-  if (target) {
+  if (
+    target
+  ) {
 
     target.classList.add(
       "active"
     );
   }
 
-
   const titles = {
 
     overview: [
+
       "Обзор рекламы",
-      "Актуальные показатели Яндекс Директа.",
+
+      "Актуальные показатели Яндекс Директа без блока креативов.",
     ],
 
     alerts: [
+
       "Аномалии",
-      "Автоматический контроль отклонений.",
+
+      "Автоматический контроль отклонений по рекламным показателям.",
     ],
 
     budget: [
+
       "Budget Optimizer",
-      "Анализ эффективности расходов.",
+
+      "Анализ расходов, трафика, конверсий и стоимости результата.",
     ],
 
     creatives: [
+
       "Creative Intelligence",
-      (
-        "Какие именно визуалы "
-        + "работают лучше остальных."
-      ),
+
+      "Какие именно визуалы работают лучше остальных.",
     ],
 
     keywords: [
+
       "Ключевые фразы",
-      "Какие запросы приводят больше всего конверсий."
+
+      "Какие рекламные ключи чаще всего приводят к конверсиям.",
     ],
   };
 
+  if (
+    titles[
+      id
+    ]
+  ) {
 
-  if (titles[id]) {
+    const title =
+      document.getElementById(
+        "pageTitle"
+      );
 
-    document.getElementById(
-      "pageTitle"
-    ).textContent =
-      titles[id][0];
+    const subtitle =
+      document.getElementById(
+        "pageSubtitle"
+      );
 
+    if (
+      title
+    ) {
 
-    document.getElementById(
-      "pageSubtitle"
-    ).textContent =
-      titles[id][1];
+      title.textContent =
+        titles[
+          id
+        ][0];
+    }
+
+    if (
+      subtitle
+    ) {
+
+      subtitle.textContent =
+        titles[
+          id
+        ][1];
+    }
   }
 }
-
 
 /* =========================================================
    UTILITIES
@@ -1894,7 +4457,9 @@ function formatDate(
   value
 ) {
 
-  if (!value) {
+  if (
+    !value
+  ) {
     return "—";
   }
 
@@ -1905,13 +4470,13 @@ function formatDate(
   );
 }
 
-
 function escapeHtml(
   value
 ) {
 
   return String(
-    value ?? ""
+    value
+    ?? ""
   )
     .replaceAll(
       "&",
@@ -1935,7 +4500,6 @@ function escapeHtml(
     );
 }
 
-
 function escapeAttribute(
   value
 ) {
@@ -1944,7 +4508,6 @@ function escapeAttribute(
     value
   );
 }
-
 
 /* =========================================================
    START
