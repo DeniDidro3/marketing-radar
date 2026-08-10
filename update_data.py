@@ -45,6 +45,49 @@ PBKDF2_ITERATIONS = 600_000
 
 
 # ============================================================
+# TRACKED CONVERSIONS
+# ============================================================
+
+# Используем одну модель атрибуции во всех отчётах, чтобы
+# показатели между разделами были сопоставимы.
+# LSCCD = последний значимый / непрямой клик cross-device.
+CONVERSION_ATTRIBUTION_MODEL = "LSCCD"
+
+ORDER_GOALS = {
+    "Order Enterprise": 492494230,
+    "Order Standard": 492494285,
+    "Order Certified": 492494335,
+    "Order Enterprise Certified": 492494419,
+    "Order Shardman": 492494539,
+    "Order AXE": 508996626,
+    "Order PPEM": 519141790,
+    "Order Enterprise 1C": 519142162,
+}
+
+# Пока ID целей регистраций на вебинары/митапы не заданы.
+# Поле в отчёте и интерфейсе остаётся, значения будут 0.
+WEBINAR_GOALS = {}
+
+SURVEY_GOALS = {
+    "BHT опрос": 487692912,
+    "White Paper AXE опрос": 541257934,
+}
+
+TRACKED_GOAL_IDS = (
+    list(ORDER_GOALS.values())
+    + list(WEBINAR_GOALS.values())
+    + list(SURVEY_GOALS.values())
+)
+
+# В Direct Reports API за один запрос можно передать до 10 целей.
+# Сейчас их ровно 10.
+if len(TRACKED_GOAL_IDS) > 10:
+    raise RuntimeError(
+        "TRACKED_GOAL_IDS > 10. Разбейте цели на несколько отчётов."
+    )
+
+
+# ============================================================
 # HELPERS
 # ============================================================
 
@@ -171,8 +214,20 @@ def request_report(
         - timedelta(days=1)
     )
 
+    # Добавляем сигнатуру списка целей и модели в ReportName.
+    # Это предотвращает HTTP 400, если набор целей позже изменится.
+    tracking_signature = hashlib.sha1(
+        json.dumps(
+            {
+                "goals": TRACKED_GOAL_IDS if "Conversions" in fields else [],
+                "model": CONVERSION_ATTRIBUTION_MODEL if "Conversions" in fields else None,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:8]
+
     report_name = make_report_name(
-        prefix,
+        f"{prefix} {tracking_signature}",
         report_type,
         fields,
         date_from,
@@ -185,33 +240,43 @@ def request_report(
         "processingMode": "auto",
         "returnMoneyInMicros": "false",
         "skipReportHeader": "true",
-        "skipColumnHeader": "true",
+        # Нужен заголовок: при Goals поле Conversions заменяется
+        # динамическими Conversions_<goal>_<model>.
+        "skipColumnHeader": "false",
         "skipReportSummary": "true",
     }
 
+    params = {
+        "SelectionCriteria": {
+            "DateFrom": date_from.isoformat(),
+            "DateTo": date_to.isoformat(),
+        },
+        "FieldNames": fields,
+        "OrderBy": [
+            {
+                "Field": "Date",
+                "SortOrder": "ASCENDING",
+            }
+        ],
+        "ReportName": report_name,
+        "ReportType": report_type,
+        "DateRangeType": "CUSTOM_DATE",
+        "Format": "TSV",
+        "IncludeVAT": "YES",
+        "IncludeDiscount": "YES",
+    }
+
+    if "Conversions" in fields:
+        params["Goals"] = [
+            str(goal_id)
+            for goal_id in TRACKED_GOAL_IDS
+        ]
+        params["AttributionModels"] = [
+            CONVERSION_ATTRIBUTION_MODEL
+        ]
+
     body = {
-        "params": {
-            "SelectionCriteria": {
-                "DateFrom": date_from.isoformat(),
-                "DateTo": date_to.isoformat(),
-            },
-
-            "FieldNames": fields,
-
-            "OrderBy": [
-                {
-                    "Field": "Date",
-                    "SortOrder": "ASCENDING",
-                }
-            ],
-
-            "ReportName": report_name,
-            "ReportType": report_type,
-            "DateRangeType": "CUSTOM_DATE",
-            "Format": "TSV",
-            "IncludeVAT": "YES",
-            "IncludeDiscount": "YES",
-        }
+        "params": params
     }
 
     max_attempts = 20
@@ -243,7 +308,6 @@ def request_report(
                 "Report ready.",
                 flush=True,
             )
-
             return response.text
 
         if response.status_code in (
@@ -257,12 +321,10 @@ def request_report(
                 ),
                 10,
             )
-
             print(
                 f"Waiting {retry_in}s...",
                 flush=True,
             )
-
             time.sleep(retry_in)
             continue
 
@@ -270,7 +332,6 @@ def request_report(
             response.text,
             flush=True,
         )
-
         raise RuntimeError(
             f"Reports API HTTP "
             f"{response.status_code}"
@@ -279,6 +340,191 @@ def request_report(
     raise RuntimeError(
         "Report generation timeout"
     )
+
+
+# ============================================================
+# CONVERSION HELPERS
+# ============================================================
+
+def goal_conversion_field(
+    goal_id,
+    model=CONVERSION_ATTRIBUTION_MODEL,
+):
+    return (
+        f"Conversions_{goal_id}_{model}"
+    )
+
+
+def conversion_breakdown_from_row(row):
+    order_conversions = sum(
+        safe_float(
+            row.get(
+                goal_conversion_field(goal_id)
+            )
+        )
+        for goal_id in ORDER_GOALS.values()
+    )
+
+    webinar_conversions = sum(
+        safe_float(
+            row.get(
+                goal_conversion_field(goal_id)
+            )
+        )
+        for goal_id in WEBINAR_GOALS.values()
+    )
+
+    survey_conversions = sum(
+        safe_float(
+            row.get(
+                goal_conversion_field(goal_id)
+            )
+        )
+        for goal_id in SURVEY_GOALS.values()
+    )
+
+    conversions = (
+        order_conversions
+        + webinar_conversions
+        + survey_conversions
+    )
+
+    return {
+        "order_conversions": round(
+            order_conversions,
+            2
+        ),
+        "webinar_conversions": round(
+            webinar_conversions,
+            2
+        ),
+        "survey_conversions": round(
+            survey_conversions,
+            2
+        ),
+        # Для обратной совместимости conversions = сумма
+        # только трёх отслеживаемых категорий.
+        "conversions": round(
+            conversions,
+            2
+        ),
+    }
+
+
+def conversion_metrics(
+    cost,
+    clicks,
+    breakdown,
+):
+    cost = safe_float(cost)
+    clicks = safe_int(clicks)
+
+    order_conversions = safe_float(
+        breakdown.get(
+            "order_conversions"
+        )
+    )
+    webinar_conversions = safe_float(
+        breakdown.get(
+            "webinar_conversions"
+        )
+    )
+    survey_conversions = safe_float(
+        breakdown.get(
+            "survey_conversions"
+        )
+    )
+    conversions = (
+        order_conversions
+        + webinar_conversions
+        + survey_conversions
+    )
+
+    return {
+        "order_conversions": round(
+            order_conversions,
+            2
+        ),
+        "webinar_conversions": round(
+            webinar_conversions,
+            2
+        ),
+        "survey_conversions": round(
+            survey_conversions,
+            2
+        ),
+        "conversions": round(
+            conversions,
+            2
+        ),
+        "order_cr": round(
+            order_conversions
+            / clicks
+            * 100,
+            3,
+        ) if clicks else 0,
+        "webinar_cr": round(
+            webinar_conversions
+            / clicks
+            * 100,
+            3,
+        ) if clicks else 0,
+        "survey_cr": round(
+            survey_conversions
+            / clicks
+            * 100,
+            3,
+        ) if clicks else 0,
+        "conversion_rate": round(
+            conversions
+            / clicks
+            * 100,
+            3,
+        ) if clicks else 0,
+        "order_cpa": round(
+            cost
+            / order_conversions,
+            2,
+        ) if order_conversions else 0,
+        "webinar_cpa": round(
+            cost
+            / webinar_conversions,
+            2,
+        ) if webinar_conversions else 0,
+        "survey_cpa": round(
+            cost
+            / survey_conversions,
+            2,
+        ) if survey_conversions else 0,
+        "cpa": round(
+            cost
+            / conversions,
+            2,
+        ) if conversions else 0,
+    }
+
+
+def metrics_from_report_row(row):
+    breakdown = conversion_breakdown_from_row(
+        row
+    )
+
+    base = metrics_from_values(
+        row.get("Impressions"),
+        row.get("Clicks"),
+        row.get("Cost"),
+        breakdown["conversions"],
+    )
+
+    base.update(
+        conversion_metrics(
+            row.get("Cost"),
+            row.get("Clicks"),
+            breakdown,
+        )
+    )
+
+    return base
 
 
 # ============================================================
@@ -297,27 +543,34 @@ def get_campaign_rows():
     ]
 
     text = request_report(
-        "MR Campaign v6",
+        "MR Campaign goals v8",
         "CAMPAIGN_PERFORMANCE_REPORT",
         fields,
     )
 
-    reader = csv.reader(
+    reader = csv.DictReader(
         io.StringIO(text),
-        delimiter="	",
+        delimiter="\t",
     )
 
     rows = []
 
-    for values in reader:
-        if not values:
+    for row in reader:
+        if not row:
             continue
 
-        if len(values) < len(fields):
-            continue
+        breakdown = (
+            conversion_breakdown_from_row(
+                row
+            )
+        )
 
-        row = dict(
-            zip(fields, values)
+        conv_metrics = (
+            conversion_metrics(
+                row.get("Cost"),
+                row.get("Clicks"),
+                breakdown,
+            )
         )
 
         rows.append({
@@ -325,32 +578,24 @@ def get_campaign_rows():
                 "Date",
                 ""
             ),
-
             "campaign_id": row.get(
                 "CampaignId",
                 ""
             ),
-
             "campaign_name": row.get(
                 "CampaignName",
                 ""
             ),
-
             "impressions": safe_int(
                 row.get("Impressions")
             ),
-
             "clicks": safe_int(
                 row.get("Clicks")
             ),
-
             "cost": safe_float(
                 row.get("Cost")
             ),
-
-            "conversions": safe_float(
-                row.get("Conversions")
-            ),
+            **conv_metrics,
         })
 
     print(
@@ -360,7 +605,6 @@ def get_campaign_rows():
     )
 
     return rows
-
 
 # ============================================================
 # AD PERFORMANCE REPORT
@@ -379,31 +623,25 @@ def get_ad_rows():
         "Impressions",
         "Clicks",
         "Cost",
+        "Conversions",
     ]
 
     text = request_report(
-        "MR Creative Performance v5",
+        "MR Creative Performance goals v8",
         "AD_PERFORMANCE_REPORT",
         fields,
     )
 
-    reader = csv.reader(
+    reader = csv.DictReader(
         io.StringIO(text),
         delimiter="\t",
     )
 
     rows = []
 
-    for values in reader:
-        if not values:
+    for row in reader:
+        if not row:
             continue
-
-        if len(values) < len(fields):
-            continue
-
-        row = dict(
-            zip(fields, values)
-        )
 
         ad_id = str(
             row.get(
@@ -419,54 +657,55 @@ def get_ad_rows():
         ):
             continue
 
+        breakdown = (
+            conversion_breakdown_from_row(
+                row
+            )
+        )
+
         rows.append({
             "date": row.get(
                 "Date",
                 ""
             ),
-
             "campaign_id": row.get(
                 "CampaignId",
                 ""
             ),
-
             "campaign_name": row.get(
                 "CampaignName",
                 ""
             ),
-
             "ad_group_id": row.get(
                 "AdGroupId",
                 ""
             ),
-
             "ad_group_name": row.get(
                 "AdGroupName",
                 ""
             ),
-
             "ad_id": ad_id,
-
             "network": row.get(
                 "AdNetworkType",
                 "UNKNOWN"
             ),
-
             "ad_format": row.get(
                 "AdFormat",
                 "UNKNOWN"
             ),
-
             "impressions": safe_int(
                 row.get("Impressions")
             ),
-
             "clicks": safe_int(
                 row.get("Clicks")
             ),
-
             "cost": safe_float(
                 row.get("Cost")
+            ),
+            **conversion_metrics(
+                row.get("Cost"),
+                row.get("Clicks"),
+                breakdown,
             ),
         })
 
@@ -477,7 +716,6 @@ def get_ad_rows():
     )
 
     return rows
-
 
 # ============================================================
 # GENERIC DIRECT JSON API
@@ -1183,6 +1421,11 @@ def create_performance_item(
 
         "spend": 0.0,
 
+        "order_conversions": 0.0,
+        "webinar_conversions": 0.0,
+        "survey_conversions": 0.0,
+        "conversions": 0.0,
+
         "ad_ids": set(),
 
         "ad_group_ids": set(),
@@ -1233,6 +1476,19 @@ def add_stats(
     item["spend"] += (
         row["cost"]
     )
+
+    for conversion_field in (
+        "order_conversions",
+        "webinar_conversions",
+        "survey_conversions",
+        "conversions",
+    ):
+        item[conversion_field] += safe_float(
+            row.get(
+                conversion_field,
+                0
+            )
+        )
 
     item["ad_ids"].add(
         row["ad_id"]
@@ -1630,6 +1886,18 @@ def build_asset_performance(
         item["avg_cpc"] = round(
             avg_cpc,
             2
+        )
+
+        item.update(
+            conversion_metrics(
+                spend,
+                clicks,
+                {
+                    "order_conversions": item.get("order_conversions", 0),
+                    "webinar_conversions": item.get("webinar_conversions", 0),
+                    "survey_conversions": item.get("survey_conversions", 0),
+                },
+            )
         )
 
         item[
@@ -2379,15 +2647,8 @@ def analyze_assets(
 
 def get_keyword_rows():
     """
-    Статистика именно по ключевым фразам, заданным в Директе.
-
-    Используем CRITERIA_PERFORMANCE_REPORT, а не
-    SEARCH_QUERY_PERFORMANCE_REPORT: последний группируется
-    по фактическому поисковому запросу пользователя.
-
-    В итог попадают только CriterionType == KEYWORD.
-    Одна и та же фраза из нескольких кампаний агрегируется
-    в одну строку, чтобы было видно её результат по аккаунту.
+    Статистика по заданным в Директе ключевым фразам.
+    Конверсии разбиты на Order / вебинар / опрос.
     """
 
     fields = [
@@ -2406,28 +2667,21 @@ def get_keyword_rows():
     ]
 
     text = request_report(
-        "MR Keyword Criteria v6",
+        "MR Keyword Criteria goals v8",
         "CRITERIA_PERFORMANCE_REPORT",
         fields,
     )
 
-    reader = csv.reader(
+    reader = csv.DictReader(
         io.StringIO(text),
-        delimiter="	",
+        delimiter="\t",
     )
 
     grouped = {}
 
-    for values in reader:
-        if not values:
+    for row in reader:
+        if not row:
             continue
-
-        if len(values) < len(fields):
-            continue
-
-        row = dict(
-            zip(fields, values)
-        )
 
         criterion_type = str(
             row.get(
@@ -2436,8 +2690,6 @@ def get_keyword_rows():
             )
         ).strip().upper()
 
-        # В разделе "Ключевые фразы" показываем
-        # только реально заданные рекламодателем ключи.
         if criterion_type != "KEYWORD":
             continue
 
@@ -2455,10 +2707,8 @@ def get_keyword_rows():
         ):
             continue
 
-        normalized = (
-            " ".join(
-                keyword.lower().split()
-            )
+        normalized = normalize_text(
+            keyword
         )
 
         if normalized not in grouped:
@@ -2473,311 +2723,152 @@ def get_keyword_rows():
                 "impressions": 0,
                 "clicks": 0,
                 "cost": 0.0,
-                "conversions": 0.0,
+                "order_conversions": 0.0,
+                "webinar_conversions": 0.0,
+                "survey_conversions": 0.0,
             }
 
         item = grouped[normalized]
 
-        criterion_id = str(
-            row.get(
-                "CriterionId",
-                ""
-            )
-        ).strip()
-
-        campaign_id = str(
-            row.get(
-                "CampaignId",
-                ""
-            )
-        ).strip()
-
-        campaign_name = str(
-            row.get(
-                "CampaignName",
-                ""
-            )
-        ).strip()
-
-        ad_group_id = str(
-            row.get(
-                "AdGroupId",
-                ""
-            )
-        ).strip()
-
-        ad_group_name = str(
-            row.get(
-                "AdGroupName",
-                ""
-            )
-        ).strip()
-
-        if criterion_id not in (
-            "",
-            "-",
-            "--",
+        for field, target in (
+            ("CriterionId", "criterion_ids"),
+            ("CampaignId", "campaign_ids"),
+            ("CampaignName", "campaign_names"),
+            ("AdGroupId", "ad_group_ids"),
+            ("AdGroupName", "ad_group_names"),
         ):
-            item[
-                "criterion_ids"
-            ].add(
-                criterion_id
-            )
+            value = str(
+                row.get(
+                    field,
+                    ""
+                )
+            ).strip()
 
-        if campaign_id not in (
-            "",
-            "-",
-            "--",
-        ):
-            item[
-                "campaign_ids"
-            ].add(
-                campaign_id
-            )
+            if value not in (
+                "",
+                "-",
+                "--",
+            ):
+                item[target].add(
+                    value
+                )
 
-        if campaign_name not in (
-            "",
-            "-",
-            "--",
-        ):
-            item[
-                "campaign_names"
-            ].add(
-                campaign_name
-            )
+        item["impressions"] += safe_int(
+            row.get("Impressions")
+        )
+        item["clicks"] += safe_int(
+            row.get("Clicks")
+        )
+        item["cost"] += safe_float(
+            row.get("Cost")
+        )
 
-        if ad_group_id not in (
-            "",
-            "-",
-            "--",
-        ):
-            item[
-                "ad_group_ids"
-            ].add(
-                ad_group_id
-            )
-
-        if ad_group_name not in (
-            "",
-            "-",
-            "--",
-        ):
-            item[
-                "ad_group_names"
-            ].add(
-                ad_group_name
-            )
-
-        item[
-            "impressions"
-        ] += safe_int(
-            row.get(
-                "Impressions"
+        breakdown = (
+            conversion_breakdown_from_row(
+                row
             )
         )
 
-        item[
-            "clicks"
-        ] += safe_int(
-            row.get(
-                "Clicks"
-            )
-        )
-
-        item[
-            "cost"
-        ] += safe_float(
-            row.get(
-                "Cost"
-            )
-        )
-
-        item[
-            "conversions"
-        ] += safe_float(
-            row.get(
-                "Conversions"
-            )
-        )
+        for field in (
+            "order_conversions",
+            "webinar_conversions",
+            "survey_conversions",
+        ):
+            item[field] += breakdown[field]
 
     result = []
 
     for item in grouped.values():
-        impressions = item[
-            "impressions"
-        ]
+        breakdown = {
+            "order_conversions": item["order_conversions"],
+            "webinar_conversions": item["webinar_conversions"],
+            "survey_conversions": item["survey_conversions"],
+        }
 
-        clicks = item[
-            "clicks"
-        ]
-
-        cost = item[
-            "cost"
-        ]
-
-        conversions = item[
-            "conversions"
-        ]
-
-        ctr = (
-            clicks
-            / impressions
-            * 100
-            if impressions > 0
-            else 0
+        conv = conversion_metrics(
+            item["cost"],
+            item["clicks"],
+            breakdown,
         )
 
-        cpc = (
-            cost
-            / clicks
-            if clicks > 0
-            else 0
-        )
-
-        conversion_rate = (
-            conversions
-            / clicks
-            * 100
-            if clicks > 0
-            else 0
-        )
-
-        cpa = (
-            cost
-            / conversions
-            if conversions > 0
-            else 0
-        )
+        impressions = item["impressions"]
+        clicks = item["clicks"]
+        cost = item["cost"]
 
         result.append({
-            "keyword": item[
-                "keyword"
-            ],
-
-            "criterion_type": item[
-                "criterion_type"
-            ],
-
-            "criterion_ids": sorted(
-                item[
-                    "criterion_ids"
-                ]
-            ),
-
-            "campaign_ids": sorted(
-                item[
-                    "campaign_ids"
-                ]
-            ),
-
-            "campaign_names": sorted(
-                item[
-                    "campaign_names"
-                ]
-            ),
-
-            "campaign_count": len(
-                item[
-                    "campaign_ids"
-                ]
-            ),
-
-            "ad_group_ids": sorted(
-                item[
-                    "ad_group_ids"
-                ]
-            ),
-
-            "ad_group_names": sorted(
-                item[
-                    "ad_group_names"
-                ]
-            ),
-
+            "keyword": item["keyword"],
+            "criterion_type": item["criterion_type"],
+            "criterion_ids": sorted(item["criterion_ids"]),
+            "campaign_ids": sorted(item["campaign_ids"]),
+            "campaign_names": sorted(item["campaign_names"]),
+            "campaign_count": len(item["campaign_ids"]),
+            "ad_group_ids": sorted(item["ad_group_ids"]),
+            "ad_group_names": sorted(item["ad_group_names"]),
             "impressions": impressions,
-
             "clicks": clicks,
-
-            "cost": round(
-                cost,
-                2
-            ),
-
-            "conversions": round(
-                conversions,
-                2
-            ),
-
+            "cost": round(cost, 2),
             "ctr": round(
-                ctr,
-                3
-            ),
-
+                clicks
+                / impressions
+                * 100,
+                3,
+            ) if impressions else 0,
             "avg_cpc": round(
-                cpc,
-                2
-            ),
-
-            "conversion_rate": round(
-                conversion_rate,
-                3
-            ),
-
-            "cpa": round(
-                cpa,
-                2
-            ),
+                cost
+                / clicks,
+                2,
+            ) if clicks else 0,
+            **conv,
         })
+
+    # Order — основной бизнес-сигнал. Если Order пока нет
+    # вообще, рейтинг автоматически опирается на сумму трёх типов.
+    total_orders = sum(
+        x["order_conversions"]
+        for x in result
+    )
+    ranking_field = (
+        "order_conversions"
+        if total_orders > 0
+        else "conversions"
+    )
+    ranking_cpa_field = (
+        "order_cpa"
+        if total_orders > 0
+        else "cpa"
+    )
 
     result.sort(
         key=lambda item: (
-            -item[
-                "conversions"
-            ],
-            item[
-                "cpa"
-            ] if item[
-                "cpa"
-            ] > 0 else float(
-                "inf"
-            ),
-            -item[
-                "clicks"
-            ],
+            -item[ranking_field],
+            item[ranking_cpa_field]
+            if item[ranking_cpa_field] > 0
+            else float("inf"),
+            -item["clicks"],
         )
     )
 
     converting = [
         item
         for item in result
-        if item[
-            "conversions"
-        ] > 0
+        if item[ranking_field] > 0
     ]
 
     cpa_values = [
-        item[
-            "cpa"
-        ]
+        item[ranking_cpa_field]
         for item in converting
-        if item[
-            "cpa"
-        ] > 0
+        if item[ranking_cpa_field] > 0
     ]
 
     median_cpa = (
-        median(
-            cpa_values
-        )
+        median(cpa_values)
         if cpa_values
         else 0
     )
 
     max_conversions = max(
         (
-            item[
-                "conversions"
-            ]
+            item[ranking_field]
             for item in converting
         ),
         default=0,
@@ -2786,18 +2877,16 @@ def get_keyword_rows():
     top_count = max(
         1,
         int(
-            len(
-                converting
-            )
+            len(converting)
             * 0.20
             + 0.999
         )
     )
 
     converting_ranks = {
-        item[
-            "keyword"
-        ].lower(): rank
+        normalize_text(
+            item["keyword"]
+        ): rank
         for rank, item in enumerate(
             converting,
             start=1,
@@ -2808,44 +2897,32 @@ def get_keyword_rows():
         result,
         start=1,
     ):
-        conversions = item[
-            "conversions"
-        ]
-
-        cpa = item[
-            "cpa"
-        ]
-
-        clicks = item[
-            "clicks"
-        ]
+        conversions = item[ranking_field]
+        cpa = item[ranking_cpa_field]
+        clicks = item["clicks"]
 
         if conversions > 0:
             converting_rank = (
                 converting_ranks.get(
-                    item[
-                        "keyword"
-                    ].lower()
+                    normalize_text(
+                        item["keyword"]
+                    )
                 )
             )
 
             if (
                 converting_rank is not None
-                and converting_rank
-                <= top_count
+                and converting_rank <= top_count
                 and (
                     median_cpa <= 0
-                    or cpa
-                    <= median_cpa
-                    * 1.20
+                    or cpa <= median_cpa * 1.20
                 )
             ):
                 status = "winner"
 
             elif (
                 median_cpa > 0
-                and cpa
-                <= median_cpa
+                and cpa <= median_cpa
             ):
                 status = "efficient"
 
@@ -2887,53 +2964,36 @@ def get_keyword_rows():
                 if clicks >= 20
                 else "needs_data"
             )
-
             score = 0
 
-        item[
-            "rank"
-        ] = index
-
-        item[
-            "status"
-        ] = status
-
-        item[
-            "score"
-        ] = int(
+        item["rank"] = index
+        item["status"] = status
+        item["score"] = int(
             clamp(
                 score,
                 0,
                 100
             )
         )
+        item["ranking_conversion_type"] = (
+            "order"
+            if ranking_field == "order_conversions"
+            else "tracked_total"
+        )
 
-    total_conversions = sum(
-        item[
-            "conversions"
-        ]
+    ranking_total = sum(
+        item[ranking_field]
         for item in result
     )
 
     for item in result:
-        item[
-            "conversion_share"
-        ] = round(
-            (
-                item[
-                    "conversions"
-                ]
-                / total_conversions
-                * 100
-            )
-            if total_conversions > 0
-            else 0,
+        item["conversion_share"] = round(
+            item[ranking_field]
+            / ranking_total
+            * 100,
             2,
-        )
-
-        item[
-            "median_cpa"
-        ] = round(
+        ) if ranking_total else 0
+        item["median_cpa"] = round(
             median_cpa,
             2
         )
@@ -2943,26 +3003,30 @@ def get_keyword_rows():
         len(result),
         flush=True,
     )
-
     print(
-        "Keywords with conversions:",
-        len(
-            converting
+        "Order conversions from keywords:",
+        round(
+            sum(
+                x["order_conversions"]
+                for x in result
+            ),
+            2,
         ),
         flush=True,
     )
-
     print(
-        "Keyword conversions:",
+        "Survey conversions from keywords:",
         round(
-            total_conversions,
-            2
+            sum(
+                x["survey_conversions"]
+                for x in result
+            ),
+            2,
         ),
         flush=True,
     )
 
     return result
-
 
 def summarize_keywords(
     keywords
@@ -2983,95 +3047,118 @@ def summarize_keywords(
         for item in keywords
     )
 
-    total_conversions = sum(
+    order_conversions = sum(
         item.get(
-            "conversions",
+            "order_conversions",
             0
         )
         for item in keywords
     )
 
-    with_conversions = sum(
-        1
+    webinar_conversions = sum(
+        item.get(
+            "webinar_conversions",
+            0
+        )
         for item in keywords
-        if item.get(
-            "conversions",
+    )
+
+    survey_conversions = sum(
+        item.get(
+            "survey_conversions",
             0
-        ) > 0
+        )
+        for item in keywords
     )
 
-    avg_cpa = (
-        total_cost
-        / total_conversions
-        if total_conversions > 0
-        else 0
-    )
-
-    conversion_rate = (
-        total_conversions
-        / total_clicks
-        * 100
-        if total_clicks > 0
-        else 0
-    )
-
-    top_keyword = (
-        keywords[0]
-        if keywords
-        and keywords[0].get(
-            "conversions",
-            0
-        ) > 0
-        else None
+    total_conversions = (
+        order_conversions
+        + webinar_conversions
+        + survey_conversions
     )
 
     return {
         "total_keywords": len(
             keywords
         ),
-
-        "with_conversions": (
-            with_conversions
+        "with_order": sum(
+            1
+            for item in keywords
+            if item.get(
+                "order_conversions",
+                0
+            ) > 0
         ),
-
+        "with_webinar": sum(
+            1
+            for item in keywords
+            if item.get(
+                "webinar_conversions",
+                0
+            ) > 0
+        ),
+        "with_survey": sum(
+            1
+            for item in keywords
+            if item.get(
+                "survey_conversions",
+                0
+            ) > 0
+        ),
+        "order_conversions": round(
+            order_conversions,
+            2
+        ),
+        "webinar_conversions": round(
+            webinar_conversions,
+            2
+        ),
+        "survey_conversions": round(
+            survey_conversions,
+            2
+        ),
         "total_conversions": round(
             total_conversions,
             2
         ),
-
         "total_cost": round(
             total_cost,
             2
         ),
-
-        "avg_cpa": round(
-            avg_cpa,
-            2
-        ),
-
-        "conversion_rate": round(
-            conversion_rate,
-            3
-        ),
-
-        "top_keyword": (
-            top_keyword.get(
-                "keyword"
-            )
-            if top_keyword
-            else None
-        ),
-
-        "top_keyword_conversions": (
-            top_keyword.get(
-                "conversions",
-                0
-            )
-            if top_keyword
-            else 0
-        ),
+        "order_cpa": round(
+            total_cost
+            / order_conversions,
+            2,
+        ) if order_conversions else 0,
+        "webinar_cpa": round(
+            total_cost
+            / webinar_conversions,
+            2,
+        ) if webinar_conversions else 0,
+        "survey_cpa": round(
+            total_cost
+            / survey_conversions,
+            2,
+        ) if survey_conversions else 0,
+        "order_cr": round(
+            order_conversions
+            / total_clicks
+            * 100,
+            3,
+        ) if total_clicks else 0,
+        "webinar_cr": round(
+            webinar_conversions
+            / total_clicks
+            * 100,
+            3,
+        ) if total_clicks else 0,
+        "survey_cr": round(
+            survey_conversions
+            / total_clicks
+            * 100,
+            3,
+        ) if total_clicks else 0,
     }
-
 
 
 # ============================================================
@@ -3110,6 +3197,14 @@ def request_advanced_report(
     today = datetime.now(timezone.utc).date()
     date_from = today - timedelta(days=days)
     date_to = today - timedelta(days=1)
+
+    if "Conversions" in fields:
+        if attribution_models is None:
+            attribution_models = [
+                CONVERSION_ATTRIBUTION_MODEL
+            ]
+        if goals is None:
+            goals = TRACKED_GOAL_IDS
 
     report_name = advanced_report_name(
         prefix,
@@ -3206,21 +3301,90 @@ def normalize_text(value):
     return " ".join(str(value or "").strip().lower().split())
 
 
-def metrics_from_values(impressions, clicks, cost, conversions):
+def metrics_from_values(
+    impressions,
+    clicks,
+    cost,
+    conversions,
+    order_conversions=0,
+    webinar_conversions=0,
+    survey_conversions=0,
+):
     impressions = safe_int(impressions)
     clicks = safe_int(clicks)
     cost = safe_float(cost)
     conversions = safe_float(conversions)
-    return {
+
+    result = {
         "impressions": impressions,
         "clicks": clicks,
         "cost": round(cost, 2),
-        "conversions": round(conversions, 2),
-        "ctr": round(clicks / impressions * 100, 3) if impressions else 0,
-        "cpc": round(cost / clicks, 2) if clicks else 0,
-        "cr": round(conversions / clicks * 100, 3) if clicks else 0,
-        "cpa": round(cost / conversions, 2) if conversions else 0,
+        "ctr": round(
+            clicks
+            / impressions
+            * 100,
+            3,
+        ) if impressions else 0,
+        "cpc": round(
+            cost
+            / clicks,
+            2,
+        ) if clicks else 0,
     }
+
+    result.update(
+        conversion_metrics(
+            cost,
+            clicks,
+            {
+                "order_conversions": order_conversions,
+                "webinar_conversions": webinar_conversions,
+                "survey_conversions": survey_conversions,
+            },
+        )
+    )
+
+    # В старых внутренних вызовах conversions может передаваться
+    # отдельно. Если breakdown пустой, сохраняем совместимость.
+    if (
+        not result["conversions"]
+        and conversions
+    ):
+        result["conversions"] = round(
+            conversions,
+            2
+        )
+        result["conversion_rate"] = round(
+            conversions
+            / clicks
+            * 100,
+            3,
+        ) if clicks else 0
+        result["cpa"] = round(
+            cost
+            / conversions,
+            2,
+        ) if conversions else 0
+
+    return result
+
+
+def metrics_from_report_row(row):
+    breakdown = (
+        conversion_breakdown_from_row(
+            row
+        )
+    )
+
+    return metrics_from_values(
+        row.get("Impressions"),
+        row.get("Clicks"),
+        row.get("Cost"),
+        breakdown["conversions"],
+        breakdown["order_conversions"],
+        breakdown["webinar_conversions"],
+        breakdown["survey_conversions"],
+    )
 
 
 # ------------------------------------------------------------
@@ -3402,15 +3566,24 @@ def build_search_query_intelligence(existing_keywords):
     ]
 
     text = request_advanced_report(
-        "MR Search Queries v7",
+        "MR Search Queries goals v8",
         "SEARCH_QUERY_PERFORMANCE_REPORT",
         fields,
-        order_by=[{"Field": "Cost", "SortOrder": "DESCENDING"}],
+        order_by=[
+            {
+                "Field": "Cost",
+                "SortOrder": "DESCENDING",
+            }
+        ],
     )
-    rows = parse_header_tsv(text)
+    rows = parse_header_tsv(
+        text
+    )
 
     existing = {
-        normalize_text(item.get("keyword"))
+        normalize_text(
+            item.get("keyword")
+        )
         for item in existing_keywords
         if item.get("keyword")
     }
@@ -3418,13 +3591,31 @@ def build_search_query_intelligence(existing_keywords):
     grouped = {}
 
     for row in rows:
-        query = str(row.get("Query") or "").strip()
-        if not query or query in ("-", "--"):
+        query = str(
+            row.get("Query")
+            or ""
+        ).strip()
+
+        if not query or query in (
+            "-",
+            "--",
+        ):
             continue
 
-        criterion = str(row.get("Criterion") or "").strip()
-        matched = str(row.get("MatchedKeyword") or "").strip()
-        match_type = str(row.get("MatchType") or "NONE").strip()
+        criterion = str(
+            row.get("Criterion")
+            or ""
+        ).strip()
+
+        matched = str(
+            row.get("MatchedKeyword")
+            or ""
+        ).strip()
+
+        match_type = str(
+            row.get("MatchType")
+            or "NONE"
+        ).strip()
 
         key = (
             normalize_text(query),
@@ -3446,92 +3637,251 @@ def build_search_query_intelligence(existing_keywords):
                 "impressions": 0,
                 "clicks": 0,
                 "cost": 0.0,
-                "conversions": 0.0,
+                "order_conversions": 0.0,
+                "webinar_conversions": 0.0,
+                "survey_conversions": 0.0,
             }
 
         item = grouped[key]
+
         for field, target in (
             ("CampaignId", "campaign_ids"),
             ("CampaignName", "campaign_names"),
             ("AdGroupId", "ad_group_ids"),
             ("AdGroupName", "ad_group_names"),
         ):
-            value = str(row.get(field) or "").strip()
-            if value and value not in ("-", "--"):
-                item[target].add(value)
+            value = str(
+                row.get(field)
+                or ""
+            ).strip()
 
-        item["impressions"] += safe_int(row.get("Impressions"))
-        item["clicks"] += safe_int(row.get("Clicks"))
-        item["cost"] += safe_float(row.get("Cost"))
-        item["conversions"] += safe_float(row.get("Conversions"))
+            if value and value not in (
+                "-",
+                "--",
+            ):
+                item[target].add(
+                    value
+                )
+
+        item["impressions"] += safe_int(
+            row.get("Impressions")
+        )
+        item["clicks"] += safe_int(
+            row.get("Clicks")
+        )
+        item["cost"] += safe_float(
+            row.get("Cost")
+        )
+
+        breakdown = (
+            conversion_breakdown_from_row(
+                row
+            )
+        )
+
+        for field in (
+            "order_conversions",
+            "webinar_conversions",
+            "survey_conversions",
+        ):
+            item[field] += breakdown[field]
 
     output = []
+
     for item in grouped.values():
         m = metrics_from_values(
             item["impressions"],
             item["clicks"],
             item["cost"],
-            item["conversions"],
+            (
+                item["order_conversions"]
+                + item["webinar_conversions"]
+                + item["survey_conversions"]
+            ),
+            item["order_conversions"],
+            item["webinar_conversions"],
+            item["survey_conversions"],
         )
-        query_is_existing_keyword = normalize_text(item["query"]) in existing
 
-        if m["conversions"] > 0 and not query_is_existing_keyword:
-            recommendation = "new_keyword_candidate"
-        elif m["conversions"] == 0 and m["clicks"] >= 10 and m["cost"] >= 1000:
-            recommendation = "negative_candidate"
-        elif item["match_type"] in ("SYNONYM", "RELATED_KEYWORD") and m["cost"] >= 1000:
-            recommendation = "semantic_expansion_review"
+        query_is_existing_keyword = (
+            normalize_text(
+                item["query"]
+            )
+            in existing
+        )
+
+        # Любая из трёх конверсий считается положительным
+        # сигналом, но Order в интерфейсе показан отдельно.
+        if (
+            m["conversions"] > 0
+            and not query_is_existing_keyword
+        ):
+            recommendation = (
+                "new_keyword_candidate"
+            )
+
+        elif (
+            m["conversions"] == 0
+            and m["clicks"] >= 10
+            and m["cost"] >= 1000
+        ):
+            recommendation = (
+                "negative_candidate"
+            )
+
+        elif (
+            item["match_type"]
+            in (
+                "SYNONYM",
+                "RELATED_KEYWORD",
+            )
+            and m["cost"] >= 1000
+        ):
+            recommendation = (
+                "semantic_expansion_review"
+            )
+
         elif m["conversions"] > 0:
-            recommendation = "converting"
+            recommendation = (
+                "converting"
+            )
+
         else:
-            recommendation = "monitor"
+            recommendation = (
+                "monitor"
+            )
 
         output.append({
-            **{k: v for k, v in item.items() if not isinstance(v, set)},
+            **{
+                k: v
+                for k, v
+                in item.items()
+                if not isinstance(
+                    v,
+                    set
+                )
+            },
             **m,
-            "campaign_ids": sorted(item["campaign_ids"]),
-            "campaign_names": sorted(item["campaign_names"]),
-            "ad_group_ids": sorted(item["ad_group_ids"]),
-            "ad_group_names": sorted(item["ad_group_names"]),
-            "query_is_existing_keyword": query_is_existing_keyword,
+            "campaign_ids": sorted(
+                item["campaign_ids"]
+            ),
+            "campaign_names": sorted(
+                item["campaign_names"]
+            ),
+            "ad_group_ids": sorted(
+                item["ad_group_ids"]
+            ),
+            "ad_group_names": sorted(
+                item["ad_group_names"]
+            ),
+            "query_is_existing_keyword": (
+                query_is_existing_keyword
+            ),
             "recommendation": recommendation,
         })
 
     output.sort(
         key=lambda x: (
-            -x["conversions"],
+            -x["order_conversions"],
+            -x["survey_conversions"],
             -x["cost"],
         )
     )
 
-    total_cost = sum(x["cost"] for x in output)
+    total_cost = sum(
+        x["cost"]
+        for x in output
+    )
+
     waste = [
-        x for x in output
-        if x["recommendation"] == "negative_candidate"
+        x
+        for x in output
+        if x["recommendation"]
+        == "negative_candidate"
     ]
+
     new_keys = [
-        x for x in output
-        if x["recommendation"] == "new_keyword_candidate"
+        x
+        for x in output
+        if x["recommendation"]
+        == "new_keyword_candidate"
     ]
+
     semantic_cost = sum(
         x["cost"]
         for x in output
-        if x["match_type"] in ("SYNONYM", "RELATED_KEYWORD")
+        if x["match_type"]
+        in (
+            "SYNONYM",
+            "RELATED_KEYWORD",
+        )
     )
 
     return {
         "rows": output[:1000],
         "summary": {
             "queries": len(output),
-            "with_conversions": sum(1 for x in output if x["conversions"] > 0),
-            "negative_candidates": len(waste),
-            "negative_candidate_spend": round(sum(x["cost"] for x in waste), 2),
-            "new_keyword_candidates": len(new_keys),
-            "semantic_expansion_spend": round(semantic_cost, 2),
-            "semantic_expansion_share": round(semantic_cost / total_cost * 100, 2) if total_cost else 0,
+            "with_order": sum(
+                1
+                for x in output
+                if x["order_conversions"] > 0
+            ),
+            "with_webinar": sum(
+                1
+                for x in output
+                if x["webinar_conversions"] > 0
+            ),
+            "with_survey": sum(
+                1
+                for x in output
+                if x["survey_conversions"] > 0
+            ),
+            "order_conversions": round(
+                sum(
+                    x["order_conversions"]
+                    for x in output
+                ),
+                2,
+            ),
+            "webinar_conversions": round(
+                sum(
+                    x["webinar_conversions"]
+                    for x in output
+                ),
+                2,
+            ),
+            "survey_conversions": round(
+                sum(
+                    x["survey_conversions"]
+                    for x in output
+                ),
+                2,
+            ),
+            "negative_candidates": len(
+                waste
+            ),
+            "negative_candidate_spend": round(
+                sum(
+                    x["cost"]
+                    for x in waste
+                ),
+                2,
+            ),
+            "new_keyword_candidates": len(
+                new_keys
+            ),
+            "semantic_expansion_spend": round(
+                semantic_cost,
+                2,
+            ),
+            "semantic_expansion_share": round(
+                semantic_cost
+                / total_cost
+                * 100,
+                2,
+            ) if total_cost else 0,
         },
     }
-
 
 # ------------------------------------------------------------
 # PLACEMENT INTELLIGENCE
@@ -3552,7 +3902,7 @@ def build_placement_intelligence():
     ]
 
     text = request_advanced_report(
-        "MR Placements v7",
+        "MR Placements goals v8",
         "CUSTOM_REPORT",
         fields,
         filters=[{
@@ -3560,19 +3910,41 @@ def build_placement_intelligence():
             "Operator": "EQUALS",
             "Values": ["AD_NETWORK"],
         }],
-        order_by=[{"Field": "Cost", "SortOrder": "DESCENDING"}],
+        order_by=[
+            {
+                "Field": "Cost",
+                "SortOrder": "DESCENDING",
+            }
+        ],
     )
-    rows = parse_header_tsv(text)
+
+    rows = parse_header_tsv(
+        text
+    )
 
     grouped = {}
 
     for row in rows:
-        placement = str(row.get("Placement") or "").strip()
-        if not placement or placement in ("-", "--"):
+        placement = str(
+            row.get("Placement")
+            or ""
+        ).strip()
+
+        if not placement or placement in (
+            "-",
+            "--",
+        ):
             continue
 
-        network = str(row.get("ExternalNetworkName") or "").strip()
-        key = (placement, network)
+        network = str(
+            row.get("ExternalNetworkName")
+            or ""
+        ).strip()
+
+        key = (
+            placement,
+            network,
+        )
 
         if key not in grouped:
             grouped[key] = {
@@ -3582,90 +3954,223 @@ def build_placement_intelligence():
                 "impressions": 0,
                 "clicks": 0,
                 "cost": 0.0,
-                "conversions": 0.0,
+                "order_conversions": 0.0,
+                "webinar_conversions": 0.0,
+                "survey_conversions": 0.0,
                 "sessions": 0,
                 "bounces": 0,
                 "pageviews_weighted": 0.0,
             }
 
         item = grouped[key]
-        device = str(row.get("Device") or "").strip()
+
+        device = str(
+            row.get("Device")
+            or ""
+        ).strip()
+
         if device:
-            item["devices"].add(device)
+            item["devices"].add(
+                device
+            )
 
-        sessions = safe_int(row.get("Sessions"))
-        avg_pageviews = safe_float(row.get("AvgPageviews"))
+        sessions = safe_int(
+            row.get("Sessions")
+        )
+        avg_pageviews = safe_float(
+            row.get("AvgPageviews")
+        )
 
-        item["impressions"] += safe_int(row.get("Impressions"))
-        item["clicks"] += safe_int(row.get("Clicks"))
-        item["cost"] += safe_float(row.get("Cost"))
-        item["conversions"] += safe_float(row.get("Conversions"))
+        item["impressions"] += safe_int(
+            row.get("Impressions")
+        )
+        item["clicks"] += safe_int(
+            row.get("Clicks")
+        )
+        item["cost"] += safe_float(
+            row.get("Cost")
+        )
         item["sessions"] += sessions
-        item["bounces"] += safe_int(row.get("Bounces"))
-        item["pageviews_weighted"] += avg_pageviews * sessions
+        item["bounces"] += safe_int(
+            row.get("Bounces")
+        )
+        item["pageviews_weighted"] += (
+            avg_pageviews
+            * sessions
+        )
+
+        breakdown = (
+            conversion_breakdown_from_row(
+                row
+            )
+        )
+        for field in (
+            "order_conversions",
+            "webinar_conversions",
+            "survey_conversions",
+        ):
+            item[field] += breakdown[field]
 
     prelim = []
+
     for item in grouped.values():
         m = metrics_from_values(
             item["impressions"],
             item["clicks"],
             item["cost"],
-            item["conversions"],
+            (
+                item["order_conversions"]
+                + item["webinar_conversions"]
+                + item["survey_conversions"]
+            ),
+            item["order_conversions"],
+            item["webinar_conversions"],
+            item["survey_conversions"],
         )
+
         bounce_rate = (
-            item["bounces"] / item["sessions"] * 100
-            if item["sessions"] else 0
+            item["bounces"]
+            / item["sessions"]
+            * 100
+            if item["sessions"]
+            else 0
         )
+
         avg_pageviews = (
-            item["pageviews_weighted"] / item["sessions"]
-            if item["sessions"] else 0
+            item["pageviews_weighted"]
+            / item["sessions"]
+            if item["sessions"]
+            else 0
         )
+
         prelim.append({
             **m,
             "placement": item["placement"],
-            "external_network": item["external_network"],
-            "devices": sorted(item["devices"]),
+            "external_network": (
+                item["external_network"]
+            ),
+            "devices": sorted(
+                item["devices"]
+            ),
             "sessions": item["sessions"],
             "bounces": item["bounces"],
-            "bounce_rate": round(bounce_rate, 2),
-            "avg_pageviews": round(avg_pageviews, 2),
+            "bounce_rate": round(
+                bounce_rate,
+                2,
+            ),
+            "avg_pageviews": round(
+                avg_pageviews,
+                2,
+            ),
         })
 
-    cpas = sorted(
-        x["cpa"]
+    # Сильные площадки определяем прежде всего по Order.
+    order_cpas = sorted(
+        x["order_cpa"]
         for x in prelim
-        if x["conversions"] >= 2 and x["cpa"] > 0
+        if (
+            x["order_conversions"] >= 2
+            and x["order_cpa"] > 0
+        )
     )
-    baseline_cpa = median(cpas) if cpas else 0
+
+    baseline_order_cpa = (
+        median(order_cpas)
+        if order_cpas
+        else 0
+    )
 
     for item in prelim:
-        if item["conversions"] == 0 and item["clicks"] >= 10 and item["cost"] >= 1000:
+        if (
+            item["conversions"] == 0
+            and item["clicks"] >= 10
+            and item["cost"] >= 1000
+        ):
             item["status"] = "waste"
-        elif item["sessions"] >= 10 and item["bounce_rate"] >= 80 and item["conversions"] == 0:
-            item["status"] = "bad_traffic"
+
         elif (
-            baseline_cpa > 0
-            and item["conversions"] >= 3
-            and item["cpa"] <= baseline_cpa * 0.8
+            item["sessions"] >= 10
+            and item["bounce_rate"] >= 80
+            and item["conversions"] == 0
+        ):
+            item["status"] = "bad_traffic"
+
+        elif (
+            baseline_order_cpa > 0
+            and item["order_conversions"] >= 3
+            and item["order_cpa"]
+            <= baseline_order_cpa * 0.8
         ):
             item["status"] = "strong"
+
         else:
             item["status"] = "normal"
 
-    prelim.sort(key=lambda x: (-x["cost"], -x["clicks"]))
-    waste_rows = [x for x in prelim if x["status"] in ("waste", "bad_traffic")]
+    prelim.sort(
+        key=lambda x: (
+            -x["cost"],
+            -x["clicks"],
+        )
+    )
+
+    waste_rows = [
+        x
+        for x in prelim
+        if x["status"]
+        in (
+            "waste",
+            "bad_traffic",
+        )
+    ]
 
     return {
         "rows": prelim[:1000],
         "summary": {
-            "placements": len(prelim),
-            "baseline_cpa": round(baseline_cpa, 2),
-            "waste_candidates": len(waste_rows),
-            "waste_candidate_spend": round(sum(x["cost"] for x in waste_rows), 2),
-            "strong_placements": sum(1 for x in prelim if x["status"] == "strong"),
+            "placements": len(
+                prelim
+            ),
+            "baseline_order_cpa": round(
+                baseline_order_cpa,
+                2,
+            ),
+            "waste_candidates": len(
+                waste_rows
+            ),
+            "waste_candidate_spend": round(
+                sum(
+                    x["cost"]
+                    for x in waste_rows
+                ),
+                2,
+            ),
+            "strong_placements": sum(
+                1
+                for x in prelim
+                if x["status"] == "strong"
+            ),
+            "order_conversions": round(
+                sum(
+                    x["order_conversions"]
+                    for x in prelim
+                ),
+                2,
+            ),
+            "webinar_conversions": round(
+                sum(
+                    x["webinar_conversions"]
+                    for x in prelim
+                ),
+                2,
+            ),
+            "survey_conversions": round(
+                sum(
+                    x["survey_conversions"]
+                    for x in prelim
+                ),
+                2,
+            ),
         },
     }
-
 
 # ------------------------------------------------------------
 # GEO INTELLIGENCE
@@ -3682,32 +4187,63 @@ def build_geo_intelligence():
     ]
 
     text = request_advanced_report(
-        "MR Geo v7",
+        "MR Geo goals v8",
         "CUSTOM_REPORT",
         fields,
-        order_by=[{"Field": "Cost", "SortOrder": "DESCENDING"}],
+        order_by=[
+            {
+                "Field": "Cost",
+                "SortOrder": "DESCENDING",
+            }
+        ],
     )
-    rows = parse_header_tsv(text)
+
+    rows = parse_header_tsv(
+        text
+    )
 
     pairs = []
     presence = {}
 
     for row in rows:
-        target = str(row.get("TargetingLocationName") or "—").strip()
-        actual = str(row.get("LocationOfPresenceName") or "—").strip()
-        m = metrics_from_values(
-            row.get("Impressions"),
-            row.get("Clicks"),
-            row.get("Cost"),
-            row.get("Conversions"),
+        target = str(
+            row.get(
+                "TargetingLocationName"
+            )
+            or "—"
+        ).strip()
+
+        actual = str(
+            row.get(
+                "LocationOfPresenceName"
+            )
+            or "—"
+        ).strip()
+
+        m = metrics_from_report_row(
+            row
         )
+
         pairs.append({
             "targeting_location": target,
             "presence_location": actual,
             "differs_from_target": (
-                normalize_text(target) != normalize_text(actual)
-                and target not in ("", "—", "-", "--")
-                and actual not in ("", "—", "-", "--")
+                normalize_text(target)
+                != normalize_text(actual)
+                and target
+                not in (
+                    "",
+                    "—",
+                    "-",
+                    "--",
+                )
+                and actual
+                not in (
+                    "",
+                    "—",
+                    "-",
+                    "--",
+                )
             ),
             **m,
         })
@@ -3718,15 +4254,25 @@ def build_geo_intelligence():
                 "impressions": 0,
                 "clicks": 0,
                 "cost": 0.0,
-                "conversions": 0.0,
+                "order_conversions": 0.0,
+                "webinar_conversions": 0.0,
+                "survey_conversions": 0.0,
             }
+
         p = presence[actual]
         p["impressions"] += m["impressions"]
         p["clicks"] += m["clicks"]
         p["cost"] += m["cost"]
-        p["conversions"] += m["conversions"]
+
+        for field in (
+            "order_conversions",
+            "webinar_conversions",
+            "survey_conversions",
+        ):
+            p[field] += m[field]
 
     presence_rows = []
+
     for p in presence.values():
         presence_rows.append({
             "location": p["location"],
@@ -3734,14 +4280,30 @@ def build_geo_intelligence():
                 p["impressions"],
                 p["clicks"],
                 p["cost"],
-                p["conversions"],
+                (
+                    p["order_conversions"]
+                    + p["webinar_conversions"]
+                    + p["survey_conversions"]
+                ),
+                p["order_conversions"],
+                p["webinar_conversions"],
+                p["survey_conversions"],
             ),
         })
 
-    presence_rows.sort(key=lambda x: -x["cost"])
-    pairs.sort(key=lambda x: -x["cost"])
+    presence_rows.sort(
+        key=lambda x:
+            -x["cost"]
+    )
+    pairs.sort(
+        key=lambda x:
+            -x["cost"]
+    )
 
-    total_cost = sum(x["cost"] for x in pairs)
+    total_cost = sum(
+        x["cost"]
+        for x in pairs
+    )
     differing_cost = sum(
         x["cost"]
         for x in pairs
@@ -3752,13 +4314,47 @@ def build_geo_intelligence():
         "locations": presence_rows[:500],
         "target_presence_pairs": pairs[:1000],
         "summary": {
-            "actual_locations": len(presence_rows),
-            "different_target_pairs": sum(1 for x in pairs if x["differs_from_target"]),
-            "different_target_spend": round(differing_cost, 2),
-            "different_target_share": round(differing_cost / total_cost * 100, 2) if total_cost else 0,
+            "actual_locations": len(
+                presence_rows
+            ),
+            "different_target_pairs": sum(
+                1
+                for x in pairs
+                if x["differs_from_target"]
+            ),
+            "different_target_spend": round(
+                differing_cost,
+                2,
+            ),
+            "different_target_share": round(
+                differing_cost
+                / total_cost
+                * 100,
+                2,
+            ) if total_cost else 0,
+            "order_conversions": round(
+                sum(
+                    x["order_conversions"]
+                    for x in pairs
+                ),
+                2,
+            ),
+            "webinar_conversions": round(
+                sum(
+                    x["webinar_conversions"]
+                    for x in pairs
+                ),
+                2,
+            ),
+            "survey_conversions": round(
+                sum(
+                    x["survey_conversions"]
+                    for x in pairs
+                ),
+                2,
+            ),
         },
     }
-
 
 # ------------------------------------------------------------
 # AUDIENCE INTELLIGENCE
@@ -3777,82 +4373,158 @@ def build_audience_intelligence():
     ]
 
     text = request_advanced_report(
-        "MR Audience v7",
+        "MR Audience goals v8",
         "CUSTOM_REPORT",
         fields,
-        order_by=[{"Field": "Cost", "SortOrder": "DESCENDING"}],
+        order_by=[
+            {
+                "Field": "Cost",
+                "SortOrder": "DESCENDING",
+            }
+        ],
     )
-    rows = parse_header_tsv(text)
+
+    rows = parse_header_tsv(
+        text
+    )
 
     items = []
     total_cost = 0.0
     total_clicks = 0
-    total_conversions = 0.0
+    total_orders = 0.0
+    total_webinars = 0.0
+    total_surveys = 0.0
 
     for row in rows:
-        m = metrics_from_values(
-            row.get("Impressions"),
-            row.get("Clicks"),
-            row.get("Cost"),
-            row.get("Conversions"),
+        m = metrics_from_report_row(
+            row
         )
+
         total_cost += m["cost"]
         total_clicks += m["clicks"]
-        total_conversions += m["conversions"]
+        total_orders += m[
+            "order_conversions"
+        ]
+        total_webinars += m[
+            "webinar_conversions"
+        ]
+        total_surveys += m[
+            "survey_conversions"
+        ]
+
         items.append({
-            "age": row.get("Age") or "UNKNOWN",
-            "gender": row.get("Gender") or "UNKNOWN",
-            "income_grade": row.get("IncomeGrade") or "UNKNOWN",
-            "device": row.get("Device") or "UNKNOWN",
+            "age": row.get("Age")
+            or "UNKNOWN",
+            "gender": row.get("Gender")
+            or "UNKNOWN",
+            "income_grade": row.get(
+                "IncomeGrade"
+            )
+            or "UNKNOWN",
+            "device": row.get("Device")
+            or "UNKNOWN",
             **m,
         })
 
-    account_cpa = (
-        total_cost / total_conversions
-        if total_conversions else 0
+    # Основная бизнес-оценка аудитории — Order.
+    account_order_cpa = (
+        total_cost
+        / total_orders
+        if total_orders
+        else 0
     )
+
     account_cpc = (
-        total_cost / total_clicks
-        if total_clicks else 0
+        total_cost
+        / total_clicks
+        if total_clicks
+        else 0
     )
 
     for item in items:
         if (
-            account_cpa > 0
-            and item["conversions"] >= 3
-            and item["cpa"] <= account_cpa * 0.75
+            account_order_cpa > 0
+            and item["order_conversions"] >= 3
+            and item["order_cpa"]
+            <= account_order_cpa * 0.75
         ):
             item["status"] = "opportunity"
-            item["recommendation"] = "Кандидат на повышающую корректировку после ручной проверки."
+            item["recommendation"] = (
+                "Order CPA заметно ниже среднего: "
+                "кандидат на повышающую корректировку "
+                "после ручной проверки."
+            )
+
         elif (
             item["clicks"] >= 10
             and (
-                item["conversions"] == 0
+                item["order_conversions"] == 0
                 or (
-                    account_cpa > 0
-                    and item["cpa"] >= account_cpa * 1.5
+                    account_order_cpa > 0
+                    and item["order_cpa"] > 0
+                    and item["order_cpa"]
+                    >= account_order_cpa * 1.5
                 )
             )
         ):
             item["status"] = "expensive"
-            item["recommendation"] = "Кандидат на понижающую корректировку после ручной проверки."
+            item["recommendation"] = (
+                "Order-эффективность слабая: "
+                "кандидат на понижающую корректировку "
+                "после ручной проверки."
+            )
+
         else:
             item["status"] = "normal"
-            item["recommendation"] = "Без явного сигнала."
+            item["recommendation"] = (
+                "Без явного сигнала."
+            )
 
-    items.sort(key=lambda x: (-x["cost"], -x["conversions"]))
+    items.sort(
+        key=lambda x: (
+            -x["cost"],
+            -x["order_conversions"],
+        )
+    )
 
     return {
         "rows": items[:1000],
         "summary": {
             "segments": len(items),
-            "account_cpa": round(account_cpa, 2),
-            "account_cpc": round(account_cpc, 2),
-            "opportunities": sum(1 for x in items if x["status"] == "opportunity"),
-            "expensive_segments": sum(1 for x in items if x["status"] == "expensive"),
+            "account_order_cpa": round(
+                account_order_cpa,
+                2,
+            ),
+            "account_cpc": round(
+                account_cpc,
+                2,
+            ),
+            "opportunities": sum(
+                1
+                for x in items
+                if x["status"]
+                == "opportunity"
+            ),
+            "expensive_segments": sum(
+                1
+                for x in items
+                if x["status"]
+                == "expensive"
+            ),
+            "order_conversions": round(
+                total_orders,
+                2,
+            ),
+            "webinar_conversions": round(
+                total_webinars,
+                2,
+            ),
+            "survey_conversions": round(
+                total_surveys,
+                2,
+            ),
         },
     }
-
 
 # ------------------------------------------------------------
 # SEARCH POSITION ECONOMICS
@@ -3876,7 +4548,7 @@ def build_position_intelligence():
     ]
 
     text = request_advanced_report(
-        "MR Position v7",
+        "MR Position goals v8",
         "CUSTOM_REPORT",
         fields,
         filters=[{
@@ -3884,34 +4556,99 @@ def build_position_intelligence():
             "Operator": "EQUALS",
             "Values": ["SEARCH"],
         }],
-        order_by=[{"Field": "Cost", "SortOrder": "DESCENDING"}],
+        order_by=[
+            {
+                "Field": "Cost",
+                "SortOrder": "DESCENDING",
+            }
+        ],
     )
-    rows = parse_header_tsv(text)
+
+    rows = parse_header_tsv(
+        text
+    )
 
     items = []
+
     for row in rows:
-        m = metrics_from_values(
-            row.get("Impressions"),
-            row.get("Clicks"),
-            row.get("Cost"),
-            row.get("Conversions"),
+        m = metrics_from_report_row(
+            row
         )
+
         items.append({
-            "campaign_id": str(row.get("CampaignId") or ""),
-            "campaign_name": row.get("CampaignName") or "",
-            "slot": row.get("Slot") or "OTHER",
-            "avg_impression_position": round(safe_float(row.get("AvgImpressionPosition")), 2),
-            "avg_click_position": round(safe_float(row.get("AvgClickPosition")), 2),
-            "avg_traffic_volume": round(safe_float(row.get("AvgTrafficVolume")), 2),
-            "avg_effective_bid": round(safe_float(row.get("AvgEffectiveBid")), 2),
-            "weighted_impressions": round(safe_float(row.get("WeightedImpressions")), 2),
-            "weighted_ctr": round(safe_float(row.get("WeightedCtr")), 3),
+            "campaign_id": str(
+                row.get("CampaignId")
+                or ""
+            ),
+            "campaign_name": (
+                row.get("CampaignName")
+                or ""
+            ),
+            "slot": (
+                row.get("Slot")
+                or "OTHER"
+            ),
+            "avg_impression_position": round(
+                safe_float(
+                    row.get(
+                        "AvgImpressionPosition"
+                    )
+                ),
+                2,
+            ),
+            "avg_click_position": round(
+                safe_float(
+                    row.get(
+                        "AvgClickPosition"
+                    )
+                ),
+                2,
+            ),
+            "avg_traffic_volume": round(
+                safe_float(
+                    row.get(
+                        "AvgTrafficVolume"
+                    )
+                ),
+                2,
+            ),
+            "avg_effective_bid": round(
+                safe_float(
+                    row.get(
+                        "AvgEffectiveBid"
+                    )
+                ),
+                2,
+            ),
+            "weighted_impressions": round(
+                safe_float(
+                    row.get(
+                        "WeightedImpressions"
+                    )
+                ),
+                2,
+            ),
+            "weighted_ctr": round(
+                safe_float(
+                    row.get(
+                        "WeightedCtr"
+                    )
+                ),
+                3,
+            ),
             **m,
         })
 
-    items.sort(key=lambda x: -x["cost"])
+    items.sort(
+        key=lambda x:
+            -x["cost"]
+    )
 
-    total_cost = sum(x["cost"] for x in items)
+    total_cost = sum(
+        x["cost"]
+        for x in items
+    )
+
     high_traffic_cost = sum(
         x["cost"]
         for x in items
@@ -3922,11 +4659,39 @@ def build_position_intelligence():
         "rows": items[:1000],
         "summary": {
             "rows": len(items),
-            "high_traffic_volume_spend": round(high_traffic_cost, 2),
-            "high_traffic_volume_share": round(high_traffic_cost / total_cost * 100, 2) if total_cost else 0,
+            "high_traffic_volume_spend": round(
+                high_traffic_cost,
+                2,
+            ),
+            "high_traffic_volume_share": round(
+                high_traffic_cost
+                / total_cost
+                * 100,
+                2,
+            ) if total_cost else 0,
+            "order_conversions": round(
+                sum(
+                    x["order_conversions"]
+                    for x in items
+                ),
+                2,
+            ),
+            "webinar_conversions": round(
+                sum(
+                    x["webinar_conversions"]
+                    for x in items
+                ),
+                2,
+            ),
+            "survey_conversions": round(
+                sum(
+                    x["survey_conversions"]
+                    for x in items
+                ),
+                2,
+            ),
         },
     }
-
 
 # ------------------------------------------------------------
 # ATTRIBUTION LAB
@@ -4316,131 +5081,75 @@ def aggregate_campaigns(rows):
         if cid not in campaigns:
             campaigns[cid] = {
                 "campaign_id": cid,
-
                 "name": row[
                     "campaign_name"
                 ],
-
                 "impressions": 0,
                 "clicks": 0,
                 "spend": 0.0,
-                "conversions": 0.0,
+                "order_conversions": 0.0,
+                "webinar_conversions": 0.0,
+                "survey_conversions": 0.0,
             }
 
         item = campaigns[cid]
 
-        item[
-            "impressions"
-        ] += row[
+        item["impressions"] += row[
             "impressions"
         ]
-
-        item[
-            "clicks"
-        ] += row[
+        item["clicks"] += row[
             "clicks"
         ]
-
-        item[
-            "spend"
-        ] += row[
+        item["spend"] += row[
             "cost"
         ]
 
-        item[
-            "conversions"
-        ] += row.get(
-            "conversions",
-            0
-        )
+        for field in (
+            "order_conversions",
+            "webinar_conversions",
+            "survey_conversions",
+        ):
+            item[field] += row.get(
+                field,
+                0
+            )
 
     result = []
 
     for item in campaigns.values():
-        impressions = item[
-            "impressions"
-        ]
-
-        clicks = item[
-            "clicks"
-        ]
-
-        spend = item[
-            "spend"
-        ]
-
-        conversions = item[
-            "conversions"
-        ]
-
-        ctr = (
-            clicks
-            / impressions
-            * 100
-            if impressions > 0
-            else 0
-        )
-
-        cpc = (
-            spend
-            / clicks
-            if clicks > 0
-            else 0
-        )
-
-        conversion_rate = (
-            conversions
-            / clicks
-            * 100
-            if clicks > 0
-            else 0
-        )
-
-        cpa = (
-            spend
-            / conversions
-            if conversions > 0
-            else 0
+        conversions = (
+            item["order_conversions"]
+            + item["webinar_conversions"]
+            + item["survey_conversions"]
         )
 
         result.append({
             **item,
-
             "spend": round(
-                spend,
-                2
+                item["spend"],
+                2,
             ),
-
-            "conversions": round(
-                conversions,
-                2
-            ),
-
             "ctr": round(
-                ctr,
-                3
-            ),
-
+                item["clicks"]
+                / item["impressions"]
+                * 100,
+                3,
+            ) if item["impressions"] else 0,
             "avg_cpc": round(
-                cpc,
-                2
-            ),
-
-            "conversion_rate": round(
-                conversion_rate,
-                3
-            ),
-
-            "cpa": round(
-                cpa,
-                2
+                item["spend"]
+                / item["clicks"],
+                2,
+            ) if item["clicks"] else 0,
+            **conversion_metrics(
+                item["spend"],
+                item["clicks"],
+                item,
             ),
         })
 
     result.sort(
-        key=lambda item: item[
-            "spend"
-        ],
+        key=lambda item:
+            item["spend"],
         reverse=True,
     )
 
@@ -4455,106 +5164,80 @@ def calculate_summary(
     campaigns
 ):
     impressions = sum(
-        c[
-            "impressions"
-        ]
+        c["impressions"]
         for c in campaigns
     )
 
     clicks = sum(
-        c[
-            "clicks"
-        ]
+        c["clicks"]
         for c in campaigns
     )
 
     spend = sum(
-        c[
-            "spend"
-        ]
+        c["spend"]
         for c in campaigns
     )
 
-    conversions = sum(
+    order_conversions = sum(
         c.get(
-            "conversions",
+            "order_conversions",
             0
         )
         for c in campaigns
     )
 
-    ctr = (
-        clicks
-        / impressions
-        * 100
-        if impressions > 0
-        else 0
+    webinar_conversions = sum(
+        c.get(
+            "webinar_conversions",
+            0
+        )
+        for c in campaigns
     )
 
-    avg_cpc = (
-        spend
-        / clicks
-        if clicks > 0
-        else 0
+    survey_conversions = sum(
+        c.get(
+            "survey_conversions",
+            0
+        )
+        for c in campaigns
     )
 
-    conversion_rate = (
-        conversions
-        / clicks
-        * 100
-        if clicks > 0
-        else 0
-    )
-
-    cpa = (
-        spend
-        / conversions
-        if conversions > 0
-        else 0
-    )
-
-    return {
+    result = {
         "spend": round(
             spend,
-            2
+            2,
         ),
-
-        "impressions": (
-            impressions
-        ),
-
+        "impressions": impressions,
         "clicks": clicks,
-
-        "conversions": round(
-            conversions,
-            2
-        ),
-
         "ctr": round(
-            ctr,
-            3
-        ),
-
+            clicks
+            / impressions
+            * 100,
+            3,
+        ) if impressions else 0,
         "avg_cpc": round(
-            avg_cpc,
-            2
-        ),
-
-        "conversion_rate": round(
-            conversion_rate,
-            3
-        ),
-
-        "cpa": round(
-            cpa,
-            2
-        ),
-
+            spend
+            / clicks,
+            2,
+        ) if clicks else 0,
         "campaigns": len(
             campaigns
         ),
     }
 
+    result.update(
+        conversion_metrics(
+            spend,
+            clicks,
+            {
+                "order_conversions": order_conversions,
+                "webinar_conversions": webinar_conversions,
+                "survey_conversions": survey_conversions,
+            },
+        )
+    )
+
+    return result
 
 def creative_summary(
     creatives
@@ -4633,151 +5316,208 @@ def creative_summary(
 # ============================================================
 
 def build_report():
-    print("======================================", flush=True)
-    print("MARKETING RADAR v7", flush=True)
-    print("======================================", flush=True)
+    print(
+        "======================================",
+        flush=True,
+    )
+    print(
+        "MARKETING RADAR v8",
+        flush=True,
+    )
+    print(
+        "======================================",
+        flush=True,
+    )
 
-    print("\n1/15 Campaign report", flush=True)
-    campaign_rows = get_campaign_rows()
+    print(
+        "\n1/11 Campaign report + goal breakdown",
+        flush=True,
+    )
+    campaign_rows = (
+        get_campaign_rows()
+    )
 
-    print("\n2/15 Keyword report", flush=True)
-    keyword_rows = get_keyword_rows()
-    keyword_summary = summarize_keywords(keyword_rows)
+    print(
+        "\n2/11 Keyword report + goal breakdown",
+        flush=True,
+    )
+    keyword_rows = (
+        get_keyword_rows()
+    )
+    keyword_summary = (
+        summarize_keywords(
+            keyword_rows
+        )
+    )
 
-    print("\n3/15 Campaign configuration", flush=True)
-    campaign_config = optional_module(
-        "Campaign configuration",
-        get_campaign_configuration,
+    print(
+        "\n3/11 Search Query Intelligence",
+        flush=True,
+    )
+    search_queries = optional_module(
+        "Search Query Intelligence",
+        lambda: build_search_query_intelligence(
+            keyword_rows
+        ),
         {
-            "campaigns": [],
-            "goal_ids": [],
-            "display_campaign_ids": [],
+            "rows": [],
             "summary": {
-                "campaigns": 0,
-                "with_counters": 0,
-                "priority_goals": 0,
-                "display_campaigns": 0,
+                "queries": 0
             },
         },
     )
 
-    print("\n3.5/15 Portfolio strategy configuration", flush=True)
-    strategy_config = optional_module(
-        "Portfolio strategies",
-        get_strategy_configuration,
-        {"rows": [], "goal_ids": [], "summary": {"strategies": 0, "priority_goals": 0}},
+    print(
+        "\n4/11 Placement Intelligence",
+        flush=True,
     )
-
-    print("\n4/15 Search Query Intelligence", flush=True)
-    search_queries = optional_module(
-        "Search Query Intelligence",
-        lambda: build_search_query_intelligence(keyword_rows),
-        {"rows": [], "summary": {"queries": 0}},
-    )
-
-    print("\n5/15 Placement Intelligence", flush=True)
     placements = optional_module(
         "Placement Intelligence",
         build_placement_intelligence,
-        {"rows": [], "summary": {"placements": 0}},
+        {
+            "rows": [],
+            "summary": {
+                "placements": 0
+            },
+        },
     )
 
-    print("\n6/15 Geo Intelligence", flush=True)
+    print(
+        "\n5/11 Geo Intelligence",
+        flush=True,
+    )
     geo = optional_module(
         "Geo Intelligence",
         build_geo_intelligence,
-        {"locations": [], "target_presence_pairs": [], "summary": {"actual_locations": 0}},
+        {
+            "locations": [],
+            "target_presence_pairs": [],
+            "summary": {
+                "actual_locations": 0
+            },
+        },
     )
 
-    print("\n7/15 Audience Intelligence", flush=True)
+    print(
+        "\n6/11 Audience Intelligence",
+        flush=True,
+    )
     audience = optional_module(
         "Audience Intelligence",
         build_audience_intelligence,
-        {"rows": [], "summary": {"segments": 0}},
+        {
+            "rows": [],
+            "summary": {
+                "segments": 0
+            },
+        },
     )
 
-    print("\n8/15 Search Position Economics", flush=True)
+    print(
+        "\n7/11 Search Position Economics",
+        flush=True,
+    )
     positions = optional_module(
         "Search Position Economics",
         build_position_intelligence,
-        {"rows": [], "summary": {"rows": 0}},
+        {
+            "rows": [],
+            "summary": {
+                "rows": 0
+            },
+        },
     )
 
-    print("\n9/15 Attribution Lab", flush=True)
-    attribution = optional_module(
-        "Attribution Lab",
-        build_attribution_intelligence,
-        {"rows": [], "summary": {"campaigns": 0}},
+    print(
+        "\n8/11 Ad performance + goal breakdown",
+        flush=True,
     )
-
-    print("\n10/15 Goal Intelligence", flush=True)
-    goals = optional_module(
-        "Goal Intelligence",
-        lambda: build_goal_intelligence(sorted(set(
-            campaign_config.get("goal_ids", []) + strategy_config.get("goal_ids", [])
-        ))[:10]),
-        {"rows": [], "summary": {"goals": 0}},
-    )
-
-    print("\n11/15 Media Intelligence", flush=True)
-    media = optional_module(
-        "Media Intelligence",
-        lambda: build_media_intelligence(campaign_config.get("display_campaign_ids", [])),
-        {"rows": [], "summary": {"display_campaigns": 0}},
-    )
-
-    print("\n12/15 Retargeting Health", flush=True)
-    retargeting = optional_module(
-        "Retargeting Health",
-        build_retargeting_health,
-        {"rows": [], "summary": {"lists": 0}},
-    )
-
-    print("\n13/15 Ad performance report", flush=True)
     ad_rows = get_ad_rows()
-    ad_ids = sorted({row["ad_id"] for row in ad_rows})
-    print("Unique ads:", len(ad_ids), flush=True)
 
-    print("\n14/15 Creative metadata", flush=True)
-    ads = get_ads(ad_ids)
+    ad_ids = sorted({
+        row["ad_id"]
+        for row in ad_rows
+    })
+
+    print(
+        "Unique ads:",
+        len(ad_ids),
+        flush=True,
+    )
+
+    print(
+        "\n9/11 Creative metadata",
+        flush=True,
+    )
+    ads = get_ads(
+        ad_ids
+    )
+
     ad_asset_map = {}
     registry = {}
 
     for ad_id, ad in ads.items():
-        assets = extract_ad_assets(ad)
-        ad_asset_map[ad_id] = assets
-        for asset in assets:
-            registry[asset["asset_key"]] = asset
+        assets = (
+            extract_ad_assets(
+                ad
+            )
+        )
+        ad_asset_map[
+            ad_id
+        ] = assets
 
-    print("Unique visual assets:", len(registry), flush=True)
+        for asset in assets:
+            registry[
+                asset["asset_key"]
+            ] = asset
+
+    print(
+        "Unique visual assets:",
+        len(registry),
+        flush=True,
+    )
 
     image_hashes = [
         asset["asset_id"]
         for asset in registry.values()
-        if asset["asset_key"].startswith("image:")
+        if asset["asset_key"].startswith(
+            "image:"
+        )
     ]
 
     creative_ids = [
         asset["asset_id"]
         for asset in registry.values()
-        if asset["asset_key"].startswith("creative:")
+        if asset["asset_key"].startswith(
+            "creative:"
+        )
     ]
 
     image_metadata = (
-        get_image_metadata(image_hashes)
+        get_image_metadata(
+            image_hashes
+        )
         if image_hashes
         else {}
     )
+
     creative_metadata = (
-        get_creative_metadata(creative_ids)
+        get_creative_metadata(
+            creative_ids
+        )
         if creative_ids
         else {}
     )
 
-    print("\n15/15 Creative attribution", flush=True)
-    performances = build_asset_performance(
-        ad_rows,
-        ad_asset_map,
+    print(
+        "\n10/11 Creative attribution",
+        flush=True,
+    )
+    performances = (
+        build_asset_performance(
+            ad_rows,
+            ad_asset_map,
+        )
     )
 
     enrich_metadata(
@@ -4787,87 +5527,128 @@ def build_report():
         creative_metadata,
     )
 
-    creatives = analyze_assets(performances)
-    campaigns = aggregate_campaigns(campaign_rows)
-    summary = calculate_summary(campaigns)
-    c_summary = creative_summary(creatives)
-
-    with_stats = sum(
-        1
-        for creative in creatives
-        if creative.get("impressions", 0) > 0
+    creatives = analyze_assets(
+        performances
     )
 
     print(
-        "Assets with statistics:",
-        with_stats,
-        "/",
-        len(creatives),
+        "\n11/11 Final summary",
         flush=True,
+    )
+    campaigns = aggregate_campaigns(
+        campaign_rows
+    )
+    summary = calculate_summary(
+        campaigns
+    )
+    c_summary = creative_summary(
+        creatives
     )
 
     advanced_summary = {
-        "search_queries": search_queries.get("summary", {}),
-        "placements": placements.get("summary", {}),
-        "geo": geo.get("summary", {}),
-        "audience": audience.get("summary", {}),
-        "positions": positions.get("summary", {}),
-        "attribution": attribution.get("summary", {}),
-        "goals": goals.get("summary", {}),
-        "media": media.get("summary", {}),
-        "retargeting": retargeting.get("summary", {}),
-        "campaign_configuration": campaign_config.get("summary", {}),
-        "strategy_configuration": strategy_config.get("summary", {}),
+        "search_queries": (
+            search_queries.get(
+                "summary",
+                {}
+            )
+        ),
+        "placements": (
+            placements.get(
+                "summary",
+                {}
+            )
+        ),
+        "geo": (
+            geo.get(
+                "summary",
+                {}
+            )
+        ),
+        "audience": (
+            audience.get(
+                "summary",
+                {}
+            )
+        ),
+        "positions": (
+            positions.get(
+                "summary",
+                {}
+            )
+        ),
     }
 
     return {
         "meta": {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
             "source": "yandex_direct",
             "period_days": REPORT_DAYS,
-            "report_version": 7,
-            "creative_method": "visual_asset_proxy_v5",
-            "keyword_method": "CRITERIA_PERFORMANCE_REPORT_KEYWORD",
-            "score_model": "CTR_60_CPC_40",
-            "min_clicks": MIN_CLICKS_FOR_SCORE,
+            "report_version": 8,
+            "conversion_attribution_model": (
+                CONVERSION_ATTRIBUTION_MODEL
+            ),
+            "conversion_categories": {
+                "order": ORDER_GOALS,
+                "webinar": WEBINAR_GOALS,
+                "survey": SURVEY_GOALS,
+            },
+            "webinar_goal_note": (
+                "ID целей вебинаров/митапов пока не настроены; "
+                "поле выводится со значением 0."
+            ),
+            "creative_method": (
+                "visual_asset_proxy_v5"
+            ),
+            "keyword_method": (
+                "CRITERIA_PERFORMANCE_REPORT_KEYWORD"
+            ),
+            "score_model": (
+                "CTR_60_CPC_40"
+            ),
+            "min_clicks": (
+                MIN_CLICKS_FOR_SCORE
+            ),
             "advanced_modules": [
                 "search_queries",
                 "placements",
                 "geo",
                 "audience",
                 "positions",
-                "attribution",
-                "goals",
-                "media",
-                "retargeting",
             ],
             "attribution_note": (
                 "exact = статистика выделенного image/video ad; "
-                "proxy = статистика объявления с единственным визуальным ассетом"
+                "proxy = статистика объявления с единственным "
+                "визуальным ассетом"
             ),
         },
+
         "summary": summary,
         "campaigns": campaigns,
         "daily": campaign_rows,
 
-        "creative_summary": c_summary,
+        "creative_summary": (
+            c_summary
+        ),
         "creatives": creatives,
 
         "keywords": keyword_rows,
-        "keyword_summary": keyword_summary,
+        "keyword_summary": (
+            keyword_summary
+        ),
 
-        "search_queries": search_queries,
+        "search_queries": (
+            search_queries
+        ),
         "placements": placements,
         "geo": geo,
         "audience": audience,
         "positions": positions,
-        "attribution": attribution,
-        "goals": goals,
-        "media": media,
-        "retargeting": retargeting,
-        "campaign_configuration": campaign_config,
-        "strategy_configuration": strategy_config,
-        "advanced_summary": advanced_summary,
+
+        "advanced_summary": (
+            advanced_summary
+        ),
     }
 
 
