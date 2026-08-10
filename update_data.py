@@ -2357,6 +2357,135 @@ def analyze_assets(
     return output
 
 
+
+
+# ============================================================
+# SEARCH KEYWORDS
+# ============================================================
+
+def get_keyword_rows():
+    fields = [
+        "Date",
+        "CampaignId",
+        "CampaignName",
+        "AdGroupId",
+        "AdGroupName",
+        "CriterionId",
+        "Criterion",
+        "Impressions",
+        "Clicks",
+        "Cost",
+        "Conversions",
+    ]
+
+    text = request_report(
+        "MR Keywords Performance v5",
+        "SEARCH_QUERY_PERFORMANCE_REPORT",
+        fields,
+    )
+
+    reader = csv.reader(
+        io.StringIO(text),
+        delimiter="\t",
+    )
+
+    grouped = {}
+
+    for values in reader:
+        if not values or len(values) < len(fields):
+            continue
+
+        row = dict(zip(fields, values))
+
+        keyword = row.get("Criterion", "").strip()
+
+        if not keyword or keyword in ("-", "--"):
+            continue
+
+        key = (
+            keyword.lower(),
+            row.get("CampaignId", ""),
+        )
+
+        if key not in grouped:
+            grouped[key] = {
+                "keyword": keyword,
+                "campaign_id": row.get("CampaignId", ""),
+                "campaign_name": row.get("CampaignName", ""),
+                "ad_group_id": row.get("AdGroupId", ""),
+                "ad_group_name": row.get("AdGroupName", ""),
+                "impressions": 0,
+                "clicks": 0,
+                "cost": 0,
+                "conversions": 0,
+            }
+
+        item = grouped[key]
+
+        item["impressions"] += safe_int(row.get("Impressions"))
+        item["clicks"] += safe_int(row.get("Clicks"))
+        item["cost"] += safe_float(row.get("Cost"))
+        item["conversions"] += safe_float(row.get("Conversions"))
+
+    result = []
+
+    for item in grouped.values():
+
+        cpa = (
+            item["cost"] / item["conversions"]
+            if item["conversions"] > 0
+            else 0
+        )
+
+        ctr = (
+            item["clicks"] / item["impressions"] * 100
+            if item["impressions"] > 0
+            else 0
+        )
+
+        score = 0
+
+        if item["conversions"] > 0:
+            score += 50
+
+        if item["clicks"] >= 20:
+            score += 25
+
+        if cpa > 0:
+            score += 25
+
+        item.update({
+            "ctr": round(ctr, 3),
+            "cpa": round(cpa, 2),
+            "score": score,
+            "status": (
+                "winner"
+                if score >= 70
+                else "needs_data"
+                if score >= 40
+                else "weak"
+            ),
+        })
+
+        result.append(item)
+
+    result.sort(
+        key=lambda x: (
+            x["conversions"],
+            -x["cpa"] if x["cpa"] > 0 else 0,
+        ),
+        reverse=True,
+    )
+
+    print(
+        "Keywords:",
+        len(result),
+        flush=True,
+    )
+
+    return result
+
+
 # ============================================================
 # CAMPAIGNS
 # ============================================================
@@ -2620,6 +2749,13 @@ def build_report():
         get_campaign_rows()
     )
 
+    print(
+        "\n1.5/6 Keyword report",
+        flush=True,
+    )
+
+    keyword_rows = get_keyword_rows()
+
     # --------------------------------------------------------
     # 2
     # --------------------------------------------------------
@@ -2873,6 +3009,8 @@ def build_report():
         "creatives": creatives,
 
         "daily": campaign_rows,
+
+        "keywords": keyword_rows,
     }
 
 
