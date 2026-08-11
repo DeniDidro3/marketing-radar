@@ -16,6 +16,7 @@ let PLACEMENT_SORT = "cost";
 let PLACEMENT_SORT_DIR = "desc";
 
 const PLACEMENT_FILTERS = {
+  campaign: "all",
   placement: "",
   network: "all",
   minOrder: "",
@@ -2590,6 +2591,46 @@ function renderCreatives() {
     (DATA.creatives || [])
       .filter(campaignPass);
 
+  const placementCampaigns =
+    [...new Map(
+      allRows
+        .filter(
+          x =>
+            String(
+              x.campaign_id
+              || ""
+            )
+        )
+        .map(
+          x => [
+            String(
+              x.campaign_id
+            ),
+            x.campaign_name
+            || `Кампания ${x.campaign_id}`,
+          ]
+        )
+    ).entries()]
+      .sort(
+        (a, b) =>
+          String(a[1])
+            .localeCompare(
+              String(b[1]),
+              "ru"
+            )
+      );
+
+  if (
+    PLACEMENT_FILTERS.campaign !== "all"
+    && !placementCampaigns.some(
+      ([id]) =>
+        id
+        === PLACEMENT_FILTERS.campaign
+    )
+  ) {
+    PLACEMENT_FILTERS.campaign = "all";
+  }
+
   const networks =
     [...new Set(
       allRows
@@ -4042,6 +4083,16 @@ function placementFilterInput(
 
 function placementFilterPass(x) {
   if (
+    PLACEMENT_FILTERS.campaign !== "all"
+    && String(
+      x.campaign_id
+      || ""
+    ) !== PLACEMENT_FILTERS.campaign
+  ) {
+    return false;
+  }
+
+  if (
     PLACEMENT_FILTERS.placement
     && !String(x.placement || "")
       .toLowerCase()
@@ -4305,6 +4356,22 @@ function renderPlacements() {
     kpiGrid([
       ["Площадок", number(filtered.length)],
       [
+        "Кампаний",
+        number(
+          new Set(
+            filtered
+              .map(
+                x =>
+                  String(
+                    x.campaign_id
+                    || ""
+                  )
+              )
+              .filter(Boolean)
+          ).size
+        )
+      ],
+      [
         "Расход",
         money(
           filtered.reduce(
@@ -4382,8 +4449,9 @@ function renderPlacements() {
         <div>
           <h3>Площадки</h3>
           <p>
-            Можно фильтровать и ранжировать от большего к меньшему
-            по любой основной метрике.
+            Сначала выберите одну кампанию или оставьте все выбранные.
+            Каждая площадка хранится отдельной строкой внутри конкретной кампании,
+            а CPA сравнивается с baseline этой же кампании.
           </p>
         </div>
       </div>
@@ -4395,6 +4463,41 @@ function renderPlacements() {
         align-items:center;
         margin-bottom:10px;
       ">
+        <select
+          data-placement-filter="campaign"
+          style="
+            min-width:280px;
+            background:#091525;
+            color:#dce7f2;
+            border:1px solid #20354e;
+            border-radius:8px;
+            padding:9px 10px;
+          "
+        >
+          <option value="all">
+            Все выбранные кампании
+          </option>
+
+          ${
+            placementCampaigns
+              .map(
+                ([id, name]) => `
+                  <option
+                    value="${esc(id)}"
+                    ${
+                      PLACEMENT_FILTERS.campaign === id
+                        ? "selected"
+                        : ""
+                    }
+                  >
+                    ${esc(name)}
+                  </option>
+                `
+              )
+              .join("")
+          }
+        </select>
+
         <select
           id="placementSortSelect"
         >
@@ -4524,6 +4627,7 @@ function renderPlacements() {
         "Сеть",
         "Order",
         "CPA Order",
+        "Baseline CPA кампании",
         "Вебинар",
         "Опрос",
         "Клики",
@@ -4551,6 +4655,16 @@ function renderPlacements() {
 
               <td>
                 ${x.order_cpa ? money(x.order_cpa) : "—"}
+              </td>
+
+              <td>
+                ${
+                  x.campaign_baseline_order_cpa
+                    ? money(
+                        x.campaign_baseline_order_cpa
+                      )
+                    : "—"
+                }
               </td>
 
               <td>${decimal(x.webinar_conversions)}</td>
