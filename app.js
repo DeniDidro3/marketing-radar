@@ -315,7 +315,7 @@ function prepareStaticCopy() {
 
   if (campaignTitle) campaignTitle.textContent = "Показатели кампаний";
   if (campaignCopy) campaignCopy.textContent = "Расход, клики, CTR, CPC и раздельные конверсии: Order / вебинары / опросы.";
-  if (budgetCopy) budgetCopy.textContent = "Сводка по расходам и эффективности рекламы.";
+  if (budgetCopy) budgetCopy.textContent = "Сводка по расходам и эффективности рекламы. Денежные показатели Reports API — без НДС.";
   if (attentionTitle) attentionTitle.textContent = "Что требует внимания";
   if (attentionCopy) attentionCopy.textContent =
     "Сигналы строятся из нескольких разрезов API, а не только из таблицы кампаний.";
@@ -334,6 +334,7 @@ function render() {
   ensureAdvancedUI();
   prepareStaticCopy();
   renderMeta();
+
   renderOverview();
   renderAlerts();
   renderBudget();
@@ -344,6 +345,15 @@ function render() {
   renderAudience();
   renderGeo();
   renderPositions();
+
+  // API-only modules.
+  // В v10 функции существовали ниже в файле, но render()
+  // их не вызывал, поэтому вкладки создавались пустыми.
+  renderPriorityGoals();
+  renderAuction();
+  renderDelivery();
+  renderChanges();
+  renderConfigurationAudit();
 }
 
 function renderMeta() {
@@ -4490,6 +4500,8 @@ function renderAuction() {
       <strong>MinSearchPrice</strong> — минимальная цена входа в поиск.
       <strong>Premium required bid</strong> — ориентир ставки для премиального блока.
       Денежные значения Bids API уже приведены из micros в ₽.
+      Параметр IncludeVAT относится к Reports API; аукционные ставки Bids.get
+      показываются как значения, которые возвращает сервис ставок.
     </div>`
     +
     table(
