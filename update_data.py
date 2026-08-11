@@ -10302,7 +10302,7 @@ def build_report(
         flush=True,
     )
     print(
-        "MARKETING RADAR v12",
+        "MARKETING RADAR v12.1",
         flush=True,
     )
     print(
@@ -10311,7 +10311,7 @@ def build_report(
     )
 
     print(
-        "\n1/20 Campaign report + goal breakdown",
+        "\n1/18 Campaign report + goal breakdown",
         flush=True,
     )
     campaign_rows = (
@@ -10332,7 +10332,7 @@ def build_report(
     })
 
     print(
-        "\n2/20 Campaign configuration",
+        "\n2/18 Campaign configuration",
         flush=True,
     )
     campaign_configuration = (
@@ -10349,23 +10349,7 @@ def build_report(
     )
 
     print(
-        "\n3/20 Portfolio strategy configuration",
-        flush=True,
-    )
-    strategy_configuration = (
-        optional_module(
-            "Portfolio strategies",
-            get_strategy_configuration,
-            {
-                "rows": [],
-                "goal_ids": [],
-                "summary": {},
-            },
-        )
-    )
-
-    print(
-        "\n4/20 Keyword report + goal breakdown",
+        "\n3/18 Keyword report + goal breakdown",
         flush=True,
     )
     keyword_rows = (
@@ -10373,7 +10357,7 @@ def build_report(
     )
 
     print(
-        "\n5/20 Keyword status/state",
+        "\n4/18 Keyword status/state",
         flush=True,
     )
     keyword_configuration = (
@@ -10413,7 +10397,7 @@ def build_report(
     )
 
     print(
-        "\n6/20 Ad group configuration / regions",
+        "\n5/18 Ad group configuration / regions",
         flush=True,
     )
     adgroup_configuration = (
@@ -10431,7 +10415,7 @@ def build_report(
     )
 
     print(
-        "\n7/20 Search Query Intelligence",
+        "\n6/18 Search Query Intelligence",
         flush=True,
     )
     search_queries = (
@@ -10452,7 +10436,7 @@ def build_report(
     )
 
     print(
-        "\n8/20 Negative keyword audit",
+        "\n7/18 Negative keyword audit",
         flush=True,
     )
     negative_keywords = (
@@ -10463,7 +10447,7 @@ def build_report(
     )
 
     print(
-        "\n10/20 Auction Intelligence (API-only)",
+        "\n8/18 Auction Intelligence (API-only)",
         flush=True,
     )
     auction_intelligence = (
@@ -10483,7 +10467,7 @@ def build_report(
     )
 
     print(
-        "\n11/20 Change Intelligence (API-only)",
+        "\n9/18 Change Intelligence (API-only)",
         flush=True,
     )
     change_intelligence = (
@@ -10513,7 +10497,7 @@ def build_report(
     )
 
     print(
-        "\n12/20 Delivery Diagnostics / hasSearchVolume",
+        "\n10/18 Delivery Diagnostics / hasSearchVolume",
         flush=True,
     )
     delivery_diagnostics = (
@@ -10533,7 +10517,7 @@ def build_report(
     )
 
     print(
-        "\n13/20 Placement Intelligence",
+        "\n11/18 Placement Intelligence",
         flush=True,
     )
     placements = (
@@ -10550,7 +10534,7 @@ def build_report(
     )
 
     print(
-        "\n14/20 Geo Intelligence",
+        "\n12/18 Geo Intelligence",
         flush=True,
     )
     geo = optional_module(
@@ -10566,7 +10550,7 @@ def build_report(
     )
 
     print(
-        "\n15/20 Audience Intelligence",
+        "\n13/18 Audience Intelligence",
         flush=True,
     )
     audience = (
@@ -10583,7 +10567,7 @@ def build_report(
     )
 
     print(
-        "\n16/20 Search Position Economics",
+        "\n14/18 Search Position Economics",
         flush=True,
     )
     positions = (
@@ -10614,7 +10598,7 @@ def build_report(
     )
 
     print(
-        "\n17/20 BidModifier / Configuration Audit (API-only)",
+        "\n15/18 BidModifier / Configuration Audit (API-only)",
         flush=True,
     )
     raw_bid_modifiers = (
@@ -10638,7 +10622,7 @@ def build_report(
     )
 
     print(
-        "\n18/20 Ad performance + goal breakdown",
+        "\n16/18 Ad performance + goal breakdown",
         flush=True,
     )
     ad_rows = get_ad_rows()
@@ -10659,7 +10643,7 @@ def build_report(
     )
 
     print(
-        "\n19/20 Creative metadata + strict attribution",
+        "\n17/18 Creative metadata + strict attribution",
         flush=True,
     )
     ads = get_ads(
@@ -10750,7 +10734,7 @@ def build_report(
     )
 
     print(
-        "\n20/20 Final summary",
+        "\n18/18 Final summary",
         flush=True,
     )
 
@@ -10839,7 +10823,7 @@ def build_report(
             "period_days": (
                 REPORT_DAYS
             ),
-            "report_version": 12,
+            "report_version": "12.1",
             "conversion_attribution_model": (
                 CONVERSION_ATTRIBUTION_MODEL
             ),
@@ -10885,7 +10869,6 @@ def build_report(
                 "geo",
                 "audience",
                 "positions",
-                "priority_goals",
                 "negative_keywords",
                 "auction_intelligence",
                 "change_intelligence",
@@ -10925,10 +10908,6 @@ def build_report(
         "geo": geo,
         "audience": audience,
         "positions": positions,
-
-        "priority_goals": (
-            priority_goals
-        ),
 
         "auction_intelligence": (
             auction_intelligence
