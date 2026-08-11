@@ -582,32 +582,86 @@ def goal_conversion_field(
     )
 
 
-def conversion_breakdown_from_row(row):
-    order_conversions = sum(
-        safe_float(
-            row.get(
-                goal_conversion_field(goal_id)
-            )
+def goal_map_breakdown_from_row(
+    row,
+    goal_map,
+):
+    return {
+        str(goal_id): round(
+            safe_float(
+                row.get(
+                    goal_conversion_field(
+                        goal_id
+                    )
+                )
+            ),
+            2,
         )
-        for goal_id in ORDER_GOALS.values()
+        for goal_id in goal_map.values()
+    }
+
+
+def merge_goal_breakdowns(
+    target,
+    source,
+):
+    if target is None:
+        target = {}
+
+    for goal_id, value in (
+        source
+        or {}
+    ).items():
+        target[
+            str(goal_id)
+        ] = round(
+            safe_float(
+                target.get(
+                    str(goal_id),
+                    0,
+                )
+            )
+            + safe_float(
+                value
+            ),
+            2,
+        )
+
+    return target
+
+
+def conversion_breakdown_from_row(row):
+    order_goal_conversions = (
+        goal_map_breakdown_from_row(
+            row,
+            ORDER_GOALS,
+        )
+    )
+
+    webinar_goal_conversions = (
+        goal_map_breakdown_from_row(
+            row,
+            WEBINAR_GOALS,
+        )
+    )
+
+    survey_goal_conversions = (
+        goal_map_breakdown_from_row(
+            row,
+            SURVEY_GOALS,
+        )
+    )
+
+    order_conversions = sum(
+        order_goal_conversions.values()
     )
 
     webinar_conversions = sum(
-        safe_float(
-            row.get(
-                goal_conversion_field(goal_id)
-            )
-        )
-        for goal_id in WEBINAR_GOALS.values()
+        webinar_goal_conversions.values()
     )
 
     survey_conversions = sum(
-        safe_float(
-            row.get(
-                goal_conversion_field(goal_id)
-            )
-        )
-        for goal_id in SURVEY_GOALS.values()
+        survey_goal_conversions.values()
     )
 
     conversions = (
@@ -629,14 +683,20 @@ def conversion_breakdown_from_row(row):
             survey_conversions,
             2
         ),
-        # Для обратной совместимости conversions = сумма
-        # только трёх отслеживаемых категорий.
         "conversions": round(
             conversions,
             2
         ),
+        "order_goal_conversions": (
+            order_goal_conversions
+        ),
+        "webinar_goal_conversions": (
+            webinar_goal_conversions
+        ),
+        "survey_goal_conversions": (
+            survey_goal_conversions
+        ),
     }
-
 
 def conversion_metrics(
     cost,
@@ -821,6 +881,21 @@ def get_campaign_rows():
             ),
             "cost": safe_float(
                 row.get("Cost")
+            ),
+            "order_goal_conversions": (
+                breakdown[
+                    "order_goal_conversions"
+                ]
+            ),
+            "webinar_goal_conversions": (
+                breakdown[
+                    "webinar_goal_conversions"
+                ]
+            ),
+            "survey_goal_conversions": (
+                breakdown[
+                    "survey_goal_conversions"
+                ]
             ),
             **conv_metrics,
         })
@@ -4915,8 +4990,7 @@ def effective_goal_ids(
     if "13" in strategy_goal_ids:
         return (
             priority_ids,
-            "priority_goals",
-        )
+                    )
 
     direct = [
         x
@@ -4938,8 +5012,7 @@ def effective_goal_ids(
     ):
         return (
             priority_ids,
-            "priority_goals",
-        )
+                    )
 
     if strategy_type in (
         "WB_MAXIMUM_CLICKS",
@@ -5080,8 +5153,7 @@ def build_priority_goals_intelligence(
 
                 priority_goals = (
                     portfolio.get(
-                        "priority_goals",
-                        []
+                                                []
                     )
                 )
 
@@ -5115,8 +5187,7 @@ def build_priority_goals_intelligence(
             else:
                 priority_goals = (
                     campaign.get(
-                        "priority_goals",
-                        []
+                                                []
                     )
                 )
 
@@ -5870,6 +5941,32 @@ def build_auction_intelligence(
             else None
         )
 
+        bid_to_search_entry_ratio = (
+            round(
+                current_bid
+                / min_search_price,
+                2,
+            )
+            if (
+                current_bid > 0
+                and min_search_price > 0
+            )
+            else None
+        )
+
+        premium_click_to_entry_ratio = (
+            round(
+                premium_click_price
+                / min_search_price,
+                2,
+            )
+            if (
+                premium_click_price > 0
+                and min_search_price > 0
+            )
+            else None
+        )
+
         competitor_median = (
             round(
                 median(
@@ -6036,6 +6133,12 @@ def build_auction_intelligence(
             ),
             "premium_gap_pct": (
                 premium_gap_pct
+            ),
+            "bid_to_search_entry_ratio": (
+                bid_to_search_entry_ratio
+            ),
+            "premium_click_to_entry_ratio": (
+                premium_click_to_entry_ratio
             ),
             "competitor_bid_median": (
                 competitor_median
@@ -7618,7 +7721,7 @@ def build_configuration_audit(
     campaign_configuration,
     audience,
     positions,
-    account_summary,
+    campaigns,
 ):
     campaign_name_map = {
         str(
@@ -7653,19 +7756,45 @@ def build_configuration_audit(
         )
     )
 
-    account_order_cpa = (
-        safe_float(
-            account_summary.get(
-                "order_cpa"
+    campaign_summary_map = {
+        str(
+            x.get(
+                "campaign_id"
             )
+        ): x
+        for x in (
+            campaigns
+            or []
         )
-    )
+    }
 
     output = []
 
     for item in (
         raw_modifiers
     ):
+        campaign_id = str(
+            item.get(
+                "CampaignId"
+            )
+            or ""
+        )
+
+        campaign_summary = (
+            campaign_summary_map.get(
+                campaign_id,
+                {}
+            )
+        )
+
+        campaign_order_cpa = (
+            safe_float(
+                campaign_summary.get(
+                    "order_cpa"
+                )
+            )
+        )
+
         modifier_type = (
             item.get(
                 "Type"
@@ -7698,7 +7827,18 @@ def build_configuration_audit(
                 x
                 for x
                 in audience_rows
-                if x.get(
+                if (
+                    not x.get(
+                        "campaign_id"
+                    )
+                    or str(
+                        x.get(
+                            "campaign_id"
+                        )
+                    )
+                    == campaign_id
+                )
+                and x.get(
                     "income_grade"
                 )
                 == grade
@@ -7725,6 +7865,18 @@ def build_configuration_audit(
                 for x
                 in audience_rows
                 if (
+                    (
+                        not x.get(
+                            "campaign_id"
+                        )
+                        or str(
+                            x.get(
+                                "campaign_id"
+                            )
+                        )
+                        == campaign_id
+                    )
+                    and (
                     not age
                     or x.get(
                         "age"
@@ -7737,6 +7889,7 @@ def build_configuration_audit(
                         "gender"
                     )
                     == gender
+                )
                 )
             ]
 
@@ -7767,7 +7920,18 @@ def build_configuration_audit(
                 x
                 for x
                 in audience_rows
-                if x.get(
+                if (
+                    not x.get(
+                        "campaign_id"
+                    )
+                    or str(
+                        x.get(
+                            "campaign_id"
+                        )
+                    )
+                    == campaign_id
+                )
+                and x.get(
                     "device"
                 )
                 == device
@@ -7789,7 +7953,18 @@ def build_configuration_audit(
                 x
                 for x
                 in position_rows
-                if x.get(
+                if (
+                    not x.get(
+                        "campaign_id"
+                    )
+                    or str(
+                        x.get(
+                            "campaign_id"
+                        )
+                    )
+                    == campaign_id
+                )
+                and x.get(
                     "slot"
                 )
                 == layout
@@ -7845,14 +8020,14 @@ def build_configuration_audit(
                     "order_conversions"
                 ] == 0
                 or (
-                    account_order_cpa > 0
+                    campaign_order_cpa > 0
                     and metrics[
                         "order_cpa"
                     ] > 0
                     and metrics[
                         "order_cpa"
                     ]
-                    >= account_order_cpa
+                    >= campaign_order_cpa
                     * 1.30
                 )
             )
@@ -7866,14 +8041,14 @@ def build_configuration_audit(
             and metrics[
                 "order_conversions"
             ] >= 3
-            and account_order_cpa > 0
+            and campaign_order_cpa > 0
             and metrics[
                 "order_cpa"
             ] > 0
             and metrics[
                 "order_cpa"
             ]
-            <= account_order_cpa
+            <= campaign_order_cpa
             * 0.75
         ):
             audit_status = (
@@ -7943,6 +8118,10 @@ def build_configuration_audit(
             ),
             "performance": (
                 metrics
+            ),
+            "campaign_order_cpa": round(
+                campaign_order_cpa,
+                2,
             ),
             "audit_status": (
                 audit_status
@@ -8361,6 +8540,385 @@ def build_search_query_intelligence(existing_keywords):
             ) if total_cost else 0,
         },
     }
+
+
+# ------------------------------------------------------------
+# SEARCH OPPORTUNITY INTELLIGENCE
+# ------------------------------------------------------------
+
+def build_search_opportunity_intelligence(
+    search_queries,
+    keyword_rows,
+):
+    query_rows = (
+        search_queries.get(
+            "rows",
+            []
+        )
+    )
+
+    existing_by_campaign = (
+        defaultdict(
+            set
+        )
+    )
+
+    for item in keyword_rows:
+        keyword = normalize_text(
+            item.get(
+                "keyword"
+            )
+        )
+
+        for campaign_id in (
+            item.get(
+                "campaign_ids",
+                []
+            )
+        ):
+            if keyword:
+                existing_by_campaign[
+                    str(
+                        campaign_id
+                    )
+                ].add(
+                    keyword
+                )
+
+    query_gap = []
+    query_routes = defaultdict(
+        list
+    )
+
+    for row in query_rows:
+        normalized_query = (
+            normalize_text(
+                row.get(
+                    "query"
+                )
+            )
+        )
+
+        if not normalized_query:
+            continue
+
+        campaign_ids = [
+            str(x)
+            for x in (
+                row.get(
+                    "campaign_ids",
+                    []
+                )
+            )
+        ]
+
+        query_routes[
+            normalized_query
+        ].append(
+            row
+        )
+
+        is_exact_keyword = any(
+            normalized_query
+            in existing_by_campaign.get(
+                campaign_id,
+                set(),
+            )
+            for campaign_id in campaign_ids
+        )
+
+        if (
+            safe_float(
+                row.get(
+                    "conversions"
+                )
+            ) > 0
+            and not is_exact_keyword
+        ):
+            query_gap.append({
+                **row,
+                "normalized_query": (
+                    normalized_query
+                ),
+                "gap_reason": (
+                    "converting_query_not_added_as_exact_keyword"
+                ),
+            })
+
+    cannibalization = []
+
+    for (
+        normalized_query,
+        routes,
+    ) in query_routes.items():
+        route_keys = set()
+        campaign_ids = set()
+
+        for route in routes:
+            campaign_ids.update(
+                str(x)
+                for x in (
+                    route.get(
+                        "campaign_ids",
+                        []
+                    )
+                )
+            )
+
+            route_keys.add((
+                tuple(
+                    sorted(
+                        str(x)
+                        for x in (
+                            route.get(
+                                "campaign_ids",
+                                []
+                            )
+                        )
+                    )
+                ),
+                normalize_text(
+                    route.get(
+                        "criterion"
+                    )
+                ),
+                route.get(
+                    "match_type"
+                ),
+            ))
+
+        if len(
+            route_keys
+        ) <= 1:
+            continue
+
+        total_cost = sum(
+            safe_float(
+                x.get(
+                    "cost"
+                )
+            )
+            for x in routes
+        )
+
+        total_conversions = sum(
+            safe_float(
+                x.get(
+                    "conversions"
+                )
+            )
+            for x in routes
+        )
+
+        total_orders = sum(
+            safe_float(
+                x.get(
+                    "order_conversions"
+                )
+            )
+            for x in routes
+        )
+
+        route_rows = []
+
+        for route in sorted(
+            routes,
+            key=lambda x:
+                -safe_float(
+                    x.get(
+                        "cost"
+                    )
+                ),
+        ):
+            route_rows.append({
+                "criterion": (
+                    route.get(
+                        "criterion"
+                    )
+                    or route.get(
+                        "matched_keyword"
+                    )
+                    or "—"
+                ),
+                "match_type": (
+                    route.get(
+                        "match_type"
+                    )
+                    or "NONE"
+                ),
+                "campaign_ids": (
+                    route.get(
+                        "campaign_ids",
+                        []
+                    )
+                ),
+                "campaign_names": (
+                    route.get(
+                        "campaign_names",
+                        []
+                    )
+                ),
+                "cost": round(
+                    safe_float(
+                        route.get(
+                            "cost"
+                        )
+                    ),
+                    2,
+                ),
+                "clicks": safe_int(
+                    route.get(
+                        "clicks"
+                    )
+                ),
+                "order_conversions": (
+                    safe_float(
+                        route.get(
+                            "order_conversions"
+                        )
+                    )
+                ),
+                "conversions": (
+                    safe_float(
+                        route.get(
+                            "conversions"
+                        )
+                    )
+                ),
+                "cpa": (
+                    safe_float(
+                        route.get(
+                            "cpa"
+                        )
+                    )
+                ),
+            })
+
+        cannibalization.append({
+            "query": (
+                routes[0].get(
+                    "query"
+                )
+                or normalized_query
+            ),
+            "normalized_query": (
+                normalized_query
+            ),
+            "route_count": len(
+                route_keys
+            ),
+            "campaign_count": len(
+                campaign_ids
+            ),
+            "campaign_ids": sorted(
+                campaign_ids
+            ),
+            "cost": round(
+                total_cost,
+                2,
+            ),
+            "order_conversions": round(
+                total_orders,
+                2,
+            ),
+            "conversions": round(
+                total_conversions,
+                2,
+            ),
+            "routes": route_rows,
+        })
+
+    query_gap.sort(
+        key=lambda x: (
+            -safe_float(
+                x.get(
+                    "order_conversions"
+                )
+            ),
+            -safe_float(
+                x.get(
+                    "conversions"
+                )
+            ),
+            -safe_float(
+                x.get(
+                    "cost"
+                )
+            ),
+        )
+    )
+
+    cannibalization.sort(
+        key=lambda x: (
+            -x[
+                "cost"
+            ],
+            -x[
+                "route_count"
+            ],
+        )
+    )
+
+    return {
+        "query_gap": (
+            query_gap[
+                :500
+            ]
+        ),
+        "cannibalization": (
+            cannibalization[
+                :500
+            ]
+        ),
+        "summary": {
+            "query_gap_count": len(
+                query_gap
+            ),
+            "query_gap_orders": round(
+                sum(
+                    safe_float(
+                        x.get(
+                            "order_conversions"
+                        )
+                    )
+                    for x in query_gap
+                ),
+                2,
+            ),
+            "query_gap_conversions": round(
+                sum(
+                    safe_float(
+                        x.get(
+                            "conversions"
+                        )
+                    )
+                    for x in query_gap
+                ),
+                2,
+            ),
+            "cannibalized_queries": len(
+                cannibalization
+            ),
+            "cannibalized_spend": round(
+                sum(
+                    x[
+                        "cost"
+                    ]
+                    for x in (
+                        cannibalization
+                    )
+                ),
+                2,
+            ),
+        },
+        "note": (
+            "Query Gap показывает конверсионные поисковые запросы, "
+            "которые не добавлены отдельным точным ключом в той же кампании. "
+            "Cannibalization показывает запросы, которые маршрутизируются "
+            "через несколько ключей/типов соответствия/кампаний."
+        ),
+    }
+
 
 # ------------------------------------------------------------
 # PLACEMENT INTELLIGENCE
@@ -9102,6 +9660,243 @@ def build_placement_intelligence():
             ),
         },
     }
+
+
+def classify_placement(
+    placement,
+    external_network="",
+):
+    value = (
+        f"{placement} {external_network}"
+    ).lower()
+
+    rules = [
+        (
+            "IT / технологии",
+            (
+                "habr",
+                "stackoverflow",
+                "github",
+                "gitlab",
+                "linux",
+                "ubuntu",
+                "developer",
+                "dev.",
+                "code",
+                "program",
+                "tech",
+                "postgres",
+                "database",
+                "server",
+            ),
+        ),
+        (
+            "VPN / proxy",
+            (
+                "vpn",
+                "proxy",
+                "anonym",
+            ),
+        ),
+        (
+            "Погода",
+            (
+                "weather",
+                "погода",
+                "gismeteo",
+                "mete",
+            ),
+        ),
+        (
+            "Новости / медиа",
+            (
+                "news",
+                "новост",
+                "ria.",
+                "rbc",
+                "lenta",
+                "gazeta",
+                "dzen",
+            ),
+        ),
+        (
+            "Финансы",
+            (
+                "bank",
+                "finance",
+                "finam",
+                "invest",
+                "бирж",
+                "кредит",
+            ),
+        ),
+        (
+            "Игры",
+            (
+                "game",
+                "игр",
+                "steam",
+                "gaming",
+            ),
+        ),
+        (
+            "Музыка / развлечения",
+            (
+                "music",
+                "музык",
+                "kino",
+                "film",
+                "video",
+                "entertain",
+            ),
+        ),
+        (
+            "Яндекс",
+            (
+                "yandex",
+                "ya.ru",
+            ),
+        ),
+    ]
+
+    for (
+        category,
+        tokens,
+    ) in rules:
+        if any(
+            token
+            in value
+            for token in tokens
+        ):
+            return category
+
+    return "Прочее"
+
+
+def enrich_placement_categories(
+    placements,
+):
+    rows = (
+        placements.get(
+            "rows",
+            []
+        )
+    )
+
+    for row in rows:
+        row[
+            "category"
+        ] = classify_placement(
+            row.get(
+                "placement"
+            ),
+            row.get(
+                "external_network"
+            ),
+        )
+
+    grouped = defaultdict(
+        lambda: {
+            "category": "",
+            "placements": 0,
+            "cost": 0.0,
+            "clicks": 0,
+            "order_conversions": 0.0,
+            "webinar_conversions": 0.0,
+            "survey_conversions": 0.0,
+        }
+    )
+
+    for row in rows:
+        category = (
+            row.get(
+                "category"
+            )
+            or "Прочее"
+        )
+
+        item = grouped[
+            category
+        ]
+        item[
+            "category"
+        ] = category
+        item[
+            "placements"
+        ] += 1
+        item[
+            "cost"
+        ] += safe_float(
+            row.get(
+                "cost"
+            )
+        )
+        item[
+            "clicks"
+        ] += safe_int(
+            row.get(
+                "clicks"
+            )
+        )
+
+        for field in (
+            "order_conversions",
+            "webinar_conversions",
+            "survey_conversions",
+        ):
+            item[
+                field
+            ] += safe_float(
+                row.get(
+                    field
+                )
+            )
+
+    category_rows = []
+
+    for item in (
+        grouped.values()
+    ):
+        item[
+            "cost"
+        ] = round(
+            item[
+                "cost"
+            ],
+            2,
+        )
+
+        item[
+            "order_cpa"
+        ] = round(
+            item[
+                "cost"
+            ]
+            / item[
+                "order_conversions"
+            ],
+            2,
+        ) if item[
+            "order_conversions"
+        ] else 0
+
+        category_rows.append(
+            item
+        )
+
+    category_rows.sort(
+        key=lambda x:
+            -x[
+                "cost"
+            ]
+    )
+
+    placements[
+        "categories"
+    ] = category_rows
+
+    return placements
+
 
 # ------------------------------------------------------------
 # GEO INTELLIGENCE
@@ -10064,6 +10859,9 @@ def aggregate_campaigns(rows):
                 "order_conversions": 0.0,
                 "webinar_conversions": 0.0,
                 "survey_conversions": 0.0,
+                "order_goal_conversions": {},
+                "webinar_goal_conversions": {},
+                "survey_goal_conversions": {},
             }
 
         item = campaigns[cid]
@@ -10088,15 +10886,36 @@ def aggregate_campaigns(rows):
                 0
             )
 
+        merge_goal_breakdowns(
+            item[
+                "order_goal_conversions"
+            ],
+            row.get(
+                "order_goal_conversions"
+            ),
+        )
+
+        merge_goal_breakdowns(
+            item[
+                "webinar_goal_conversions"
+            ],
+            row.get(
+                "webinar_goal_conversions"
+            ),
+        )
+
+        merge_goal_breakdowns(
+            item[
+                "survey_goal_conversions"
+            ],
+            row.get(
+                "survey_goal_conversions"
+            ),
+        )
+
     result = []
 
     for item in campaigns.values():
-        conversions = (
-            item["order_conversions"]
-            + item["webinar_conversions"]
-            + item["survey_conversions"]
-        )
-
         result.append({
             **item,
             "spend": round(
@@ -10128,6 +10947,834 @@ def aggregate_campaigns(rows):
     )
 
     return result
+
+
+
+# ============================================================
+# BUDGET SATURATION / MARGINAL CPA
+# ============================================================
+
+def quantile_value(
+    values,
+    q,
+):
+    values = sorted(
+        safe_float(x)
+        for x in values
+    )
+
+    if not values:
+        return 0
+
+    if len(
+        values
+    ) == 1:
+        return values[0]
+
+    position = (
+        len(
+            values
+        )
+        - 1
+    ) * q
+
+    low = int(
+        position
+    )
+    high = min(
+        low + 1,
+        len(
+            values
+        )
+        - 1,
+    )
+
+    weight = (
+        position
+        - low
+    )
+
+    return (
+        values[low]
+        * (
+            1
+            - weight
+        )
+        + values[high]
+        * weight
+    )
+
+
+def build_budget_saturation(
+    campaign_rows,
+):
+    grouped = defaultdict(
+        list
+    )
+
+    for row in campaign_rows:
+        grouped[
+            str(
+                row.get(
+                    "campaign_id"
+                )
+            )
+        ].append(
+            row
+        )
+
+    output = []
+
+    for (
+        campaign_id,
+        rows,
+    ) in grouped.items():
+        active_days = [
+            row
+            for row in rows
+            if safe_float(
+                row.get(
+                    "cost"
+                )
+            ) > 0
+        ]
+
+        if len(
+            active_days
+        ) < 10:
+            output.append({
+                "campaign_id": (
+                    campaign_id
+                ),
+                "campaign_name": (
+                    rows[0].get(
+                        "campaign_name"
+                    )
+                    if rows
+                    else ""
+                ),
+                "status": (
+                    "insufficient_data"
+                ),
+                "active_days": len(
+                    active_days
+                ),
+                "buckets": [],
+            })
+            continue
+
+        spends = [
+            safe_float(
+                x.get(
+                    "cost"
+                )
+            )
+            for x in active_days
+        ]
+
+        q25 = quantile_value(
+            spends,
+            0.25,
+        )
+        q50 = quantile_value(
+            spends,
+            0.50,
+        )
+        q75 = quantile_value(
+            spends,
+            0.75,
+        )
+
+        buckets = [
+            {
+                "id": "low",
+                "label": "Низкий расход",
+                "min": 0,
+                "max": q25,
+                "rows": [],
+            },
+            {
+                "id": "mid_low",
+                "label": "Ниже среднего",
+                "min": q25,
+                "max": q50,
+                "rows": [],
+            },
+            {
+                "id": "mid_high",
+                "label": "Выше среднего",
+                "min": q50,
+                "max": q75,
+                "rows": [],
+            },
+            {
+                "id": "high",
+                "label": "Высокий расход",
+                "min": q75,
+                "max": float(
+                    "inf"
+                ),
+                "rows": [],
+            },
+        ]
+
+        for row in active_days:
+            spend = safe_float(
+                row.get(
+                    "cost"
+                )
+            )
+
+            for bucket in buckets:
+                if (
+                    spend
+                    >= bucket[
+                        "min"
+                    ]
+                    and spend
+                    <= bucket[
+                        "max"
+                    ]
+                ):
+                    bucket[
+                        "rows"
+                    ].append(
+                        row
+                    )
+                    break
+
+        public_buckets = []
+
+        for bucket in buckets:
+            bucket_rows = (
+                bucket[
+                    "rows"
+                ]
+            )
+
+            if not bucket_rows:
+                continue
+
+            spend = sum(
+                safe_float(
+                    x.get(
+                        "cost"
+                    )
+                )
+                for x in bucket_rows
+            )
+
+            orders = sum(
+                safe_float(
+                    x.get(
+                        "order_conversions"
+                    )
+                )
+                for x in bucket_rows
+            )
+
+            clicks = sum(
+                safe_int(
+                    x.get(
+                        "clicks"
+                    )
+                )
+                for x in bucket_rows
+            )
+
+            public_buckets.append({
+                "id": (
+                    bucket[
+                        "id"
+                    ]
+                ),
+                "label": (
+                    bucket[
+                        "label"
+                    ]
+                ),
+                "days": len(
+                    bucket_rows
+                ),
+                "avg_daily_spend": round(
+                    spend
+                    / len(
+                        bucket_rows
+                    ),
+                    2,
+                ),
+                "spend": round(
+                    spend,
+                    2,
+                ),
+                "order_conversions": round(
+                    orders,
+                    2,
+                ),
+                "order_cpa": round(
+                    spend
+                    / orders,
+                    2,
+                ) if orders else 0,
+                "clicks": clicks,
+                "avg_cpc": round(
+                    spend
+                    / clicks,
+                    2,
+                ) if clicks else 0,
+            })
+
+        high = next(
+            (
+                x
+                for x in public_buckets
+                if x[
+                    "id"
+                ]
+                == "high"
+            ),
+            None,
+        )
+
+        mid = next(
+            (
+                x
+                for x in public_buckets
+                if x[
+                    "id"
+                ]
+                == "mid_high"
+            ),
+            None,
+        )
+
+        all_spend = sum(
+            safe_float(
+                x.get(
+                    "cost"
+                )
+            )
+            for x in active_days
+        )
+
+        all_orders = sum(
+            safe_float(
+                x.get(
+                    "order_conversions"
+                )
+            )
+            for x in active_days
+        )
+
+        overall_cpa = (
+            all_spend
+            / all_orders
+            if all_orders
+            else 0
+        )
+
+        status = (
+            "neutral"
+        )
+        saturation_ratio = 0
+
+        if (
+            high
+            and mid
+            and high[
+                "order_conversions"
+            ] > 0
+            and mid[
+                "order_conversions"
+            ] > 0
+        ):
+            saturation_ratio = (
+                high[
+                    "order_cpa"
+                ]
+                / mid[
+                    "order_cpa"
+                ]
+                if mid[
+                    "order_cpa"
+                ]
+                else 0
+            )
+
+            if (
+                saturation_ratio
+                >= 1.35
+            ):
+                status = (
+                    "saturated"
+                )
+
+            elif (
+                overall_cpa > 0
+                and high[
+                    "order_cpa"
+                ]
+                <= overall_cpa
+                * 1.10
+            ):
+                status = (
+                    "scalable"
+                )
+
+        output.append({
+            "campaign_id": (
+                campaign_id
+            ),
+            "campaign_name": (
+                rows[0].get(
+                    "campaign_name"
+                )
+                if rows
+                else ""
+            ),
+            "active_days": len(
+                active_days
+            ),
+            "q25_spend": round(
+                q25,
+                2,
+            ),
+            "median_daily_spend": round(
+                q50,
+                2,
+            ),
+            "q75_spend": round(
+                q75,
+                2,
+            ),
+            "overall_order_cpa": round(
+                overall_cpa,
+                2,
+            ),
+            "saturation_ratio": round(
+                saturation_ratio,
+                2,
+            ),
+            "status": status,
+            "buckets": (
+                public_buckets
+            ),
+        })
+
+    status_order = {
+        "saturated": 0,
+        "scalable": 1,
+        "neutral": 2,
+        "insufficient_data": 3,
+    }
+
+    output.sort(
+        key=lambda x: (
+            status_order.get(
+                x[
+                    "status"
+                ],
+                99,
+            ),
+            -safe_float(
+                x.get(
+                    "q75_spend"
+                )
+            ),
+        )
+    )
+
+    return {
+        "rows": output,
+        "summary": {
+            "campaigns": len(
+                output
+            ),
+            "saturated": sum(
+                1
+                for x in output
+                if x[
+                    "status"
+                ]
+                == "saturated"
+            ),
+            "scalable": sum(
+                1
+                for x in output
+                if x[
+                    "status"
+                ]
+                == "scalable"
+            ),
+        },
+        "note": (
+            "Это диагностическая оценка насыщения, а не причинный эксперимент. "
+            "Дни кампании разбиваются на квартильные уровни расхода, после чего "
+            "сравнивается Order CPA при высоком и среднем расходе."
+        ),
+    }
+
+
+
+# ============================================================
+# OPTIONAL MASTER REPORT CREATIVE IMPORT
+# ============================================================
+
+def normalize_report_header(
+    value
+):
+    return re.sub(
+        r"\s+",
+        " ",
+        str(
+            value
+            or ""
+        ).strip().lower(),
+    )
+
+
+def load_creative_master_export():
+    """
+    Optional bridge to the element-level statistics available in the
+    new Direct Master Report but absent from public Reports API.
+
+    Put an exported CSV/TSV into:
+        data/creative_master_report.csv
+    or set CREATIVE_MASTER_REPORT_PATH.
+
+    The daily API workflow continues to work when the file is absent.
+    """
+    raw_path = (
+        os.getenv(
+            "CREATIVE_MASTER_REPORT_PATH",
+            ""
+        ).strip()
+        or "data/creative_master_report.csv"
+    )
+
+    path = Path(
+        raw_path
+    )
+
+    if not path.exists():
+        return {
+            "available": False,
+            "source": None,
+            "rows": [],
+            "summary": {
+                "rows": 0,
+            },
+            "note": (
+                "Файл экспорта Мастера отчётов не найден. "
+                "Публичный Reports API не отдаёт element-level "
+                "группировки Изображение / Название изображения / ID видео."
+            ),
+        }
+
+    if path.suffix.lower() not in (
+        ".csv",
+        ".tsv",
+        ".txt",
+    ):
+        return {
+            "available": False,
+            "source": str(
+                path
+            ),
+            "rows": [],
+            "summary": {
+                "rows": 0,
+            },
+            "note": (
+                "Для автоматического импорта используйте CSV/TSV экспорт "
+                "Мастера отчётов."
+            ),
+        }
+
+    raw = path.read_text(
+        encoding="utf-8-sig",
+        errors="replace",
+    )
+
+    sample = raw[
+        :5000
+    ]
+
+    delimiter = "\t"
+
+    if sample.count(
+        ";"
+    ) > sample.count(
+        "\t"
+    ):
+        delimiter = ";"
+
+    elif sample.count(
+        ","
+    ) > sample.count(
+        "\t"
+    ):
+        delimiter = ","
+
+    reader = csv.DictReader(
+        io.StringIO(
+            raw
+        ),
+        delimiter=delimiter,
+    )
+
+    def pick(
+        row,
+        candidates,
+    ):
+        normalized = {
+            normalize_report_header(
+                key
+            ): value
+            for key, value
+            in row.items()
+        }
+
+        for candidate in candidates:
+            key = normalize_report_header(
+                candidate
+            )
+
+            if key in normalized:
+                return normalized[
+                    key
+                ]
+
+        return None
+
+    rows = []
+
+    for row in reader:
+        image_name = pick(
+            row,
+            (
+                "Название изображения",
+                "Изображение",
+                "Image name",
+                "Image",
+            ),
+        )
+
+        video_id = pick(
+            row,
+            (
+                "ID видео",
+                "Video ID",
+            ),
+        )
+
+        preview_video = pick(
+            row,
+            (
+                "Превью видео",
+                "Video preview",
+            ),
+        )
+
+        if not (
+            image_name
+            or video_id
+            or preview_video
+        ):
+            continue
+
+        campaign_name = pick(
+            row,
+            (
+                "Кампания",
+                "Название кампании",
+                "Campaign",
+                "Campaign name",
+            ),
+        ) or ""
+
+        impressions = safe_int(
+            pick(
+                row,
+                (
+                    "Показы",
+                    "Impressions",
+                ),
+            )
+        )
+
+        clicks = safe_int(
+            pick(
+                row,
+                (
+                    "Клики",
+                    "Clicks",
+                ),
+            )
+        )
+
+        cost = safe_float(
+            pick(
+                row,
+                (
+                    "Расход",
+                    "Cost",
+                ),
+            )
+        )
+
+        conversions = safe_float(
+            pick(
+                row,
+                (
+                    "Конверсии",
+                    "Conversions",
+                ),
+            )
+        )
+
+        order_goal_conversions = {}
+
+        normalized_row = {
+            normalize_report_header(
+                key
+            ): value
+            for key, value
+            in row.items()
+        }
+
+        for (
+            goal_name,
+            goal_id,
+        ) in ORDER_GOALS.items():
+            total = 0.0
+
+            for (
+                header,
+                value,
+            ) in normalized_row.items():
+                if (
+                    normalize_report_header(
+                        goal_name
+                    )
+                    in header
+                    and (
+                        "конверс"
+                        in header
+                        or "conversion"
+                        in header
+                    )
+                ):
+                    total += safe_float(
+                        value
+                    )
+
+            order_goal_conversions[
+                str(
+                    goal_id
+                )
+            ] = round(
+                total,
+                2,
+            )
+
+        order_conversions = sum(
+            order_goal_conversions.values()
+        )
+
+        rows.append({
+            "source": (
+                "master_report_export"
+            ),
+            "campaign_name": (
+                campaign_name
+            ),
+            "image_name": (
+                image_name
+            ),
+            "video_id": (
+                str(
+                    video_id
+                    or ""
+                )
+            ),
+            "video_preview": (
+                preview_video
+            ),
+            "impressions": (
+                impressions
+            ),
+            "clicks": clicks,
+            "cost": round(
+                cost,
+                2,
+            ),
+            "ctr": round(
+                clicks
+                / impressions
+                * 100,
+                3,
+            ) if impressions else 0,
+            "avg_cpc": round(
+                cost
+                / clicks,
+                2,
+            ) if clicks else 0,
+            "conversions": round(
+                conversions,
+                2,
+            ),
+            "order_conversions": round(
+                order_conversions,
+                2,
+            ),
+            "order_goal_conversions": (
+                order_goal_conversions
+            ),
+        })
+
+    return {
+        "available": bool(
+            rows
+        ),
+        "source": str(
+            path
+        ),
+        "rows": rows,
+        "summary": {
+            "rows": len(
+                rows
+            ),
+            "spend": round(
+                sum(
+                    x[
+                        "cost"
+                    ]
+                    for x in rows
+                ),
+                2,
+            ),
+            "clicks": sum(
+                x[
+                    "clicks"
+                ]
+                for x in rows
+            ),
+            "order_conversions": round(
+                sum(
+                    x[
+                        "order_conversions"
+                    ]
+                    for x in rows
+                ),
+                2,
+            ),
+        },
+        "note": (
+            "Это точные element-level строки из экспортированного "
+            "Мастера отчётов. API-fallback используется отдельно."
+        ),
+    }
 
 
 # ============================================================
@@ -10176,6 +11823,30 @@ def calculate_summary(
         for c in campaigns
     )
 
+    order_goal_conversions = {}
+    webinar_goal_conversions = {}
+    survey_goal_conversions = {}
+
+    for campaign in campaigns:
+        merge_goal_breakdowns(
+            order_goal_conversions,
+            campaign.get(
+                "order_goal_conversions"
+            ),
+        )
+        merge_goal_breakdowns(
+            webinar_goal_conversions,
+            campaign.get(
+                "webinar_goal_conversions"
+            ),
+        )
+        merge_goal_breakdowns(
+            survey_goal_conversions,
+            campaign.get(
+                "survey_goal_conversions"
+            ),
+        )
+
     result = {
         "spend": round(
             spend,
@@ -10197,6 +11868,15 @@ def calculate_summary(
         "campaigns": len(
             campaigns
         ),
+        "order_goal_conversions": (
+            order_goal_conversions
+        ),
+        "webinar_goal_conversions": (
+            webinar_goal_conversions
+        ),
+        "survey_goal_conversions": (
+            survey_goal_conversions
+        ),
     }
 
     result.update(
@@ -10204,9 +11884,15 @@ def calculate_summary(
             spend,
             clicks,
             {
-                "order_conversions": order_conversions,
-                "webinar_conversions": webinar_conversions,
-                "survey_conversions": survey_conversions,
+                "order_conversions": (
+                    order_conversions
+                ),
+                "webinar_conversions": (
+                    webinar_conversions
+                ),
+                "survey_conversions": (
+                    survey_conversions
+                ),
             },
         )
     )
@@ -10302,7 +11988,7 @@ def build_report(
         flush=True,
     )
     print(
-        "MARKETING RADAR v12.1",
+        "MARKETING RADAR v13",
         flush=True,
     )
     print(
@@ -10533,6 +12219,12 @@ def build_report(
         )
     )
 
+    placements = (
+        enrich_placement_categories(
+            placements
+        )
+    )
+
     print(
         "\n12/18 Geo Intelligence",
         flush=True,
@@ -10617,7 +12309,7 @@ def build_report(
             campaign_configuration,
             audience,
             positions,
-            summary,
+            campaigns,
         )
     )
 
@@ -10734,12 +12426,40 @@ def build_report(
     )
 
     print(
-        "\n18/18 Final summary",
+        "\n18/18 Final summary + cross-module intelligence",
         flush=True,
     )
 
     c_summary = creative_summary(
         creatives
+    )
+
+    search_opportunities = (
+        build_search_opportunity_intelligence(
+            search_queries,
+            keyword_rows,
+        )
+    )
+
+    budget_saturation = (
+        build_budget_saturation(
+            campaign_rows
+        )
+    )
+
+    creative_master = (
+        load_creative_master_export()
+    )
+
+    radar = (
+        build_radar_intelligence(
+            search_opportunities,
+            placements,
+            configuration_audit,
+            budget_saturation,
+            creatives,
+            creative_master,
+        )
     )
 
     advanced_summary = {
@@ -10803,6 +12523,24 @@ def build_report(
                 {}
             )
         ),
+        "search_opportunities": (
+            search_opportunities.get(
+                "summary",
+                {}
+            )
+        ),
+        "budget_saturation": (
+            budget_saturation.get(
+                "summary",
+                {}
+            )
+        ),
+        "radar": (
+            radar.get(
+                "summary",
+                {}
+            )
+        ),
     }
 
     return {
@@ -10823,7 +12561,7 @@ def build_report(
             "period_days": (
                 REPORT_DAYS
             ),
-            "report_version": "12.1",
+            "report_version": 13,
             "conversion_attribution_model": (
                 CONVERSION_ATTRIBUTION_MODEL
             ),
@@ -10832,12 +12570,22 @@ def build_report(
                 "webinar": WEBINAR_GOALS,
                 "survey": SURVEY_GOALS,
             },
+            "order_goal_catalog": {
+                str(
+                    goal_id
+                ): goal_name
+                for (
+                    goal_name,
+                    goal_id
+                )
+                in ORDER_GOALS.items()
+            },
             "webinar_goal_note": (
                 "ID целей вебинаров/митапов пока не настроены; "
                 "поле выводится со значением 0."
             ),
             "creative_method": (
-                "strict_asset_attribution_v12"
+                "strict_asset_attribution_v13"
             ),
             "creative_master_report_note": (
                 "Новый Мастер отчётов Директа умеет группировать по "
@@ -10874,6 +12622,10 @@ def build_report(
                 "change_intelligence",
                 "delivery_diagnostics",
                 "configuration_audit",
+                "search_opportunities",
+                "budget_saturation",
+                "radar",
+                "creative_master",
             ],
         },
 
@@ -10922,12 +12674,256 @@ def build_report(
             configuration_audit
         ),
 
+        "search_opportunities": (
+            search_opportunities
+        ),
+        "budget_saturation": (
+            budget_saturation
+        ),
+        "creative_master": (
+            creative_master
+        ),
+        "radar": radar,
+
         "advanced_summary": (
             advanced_summary
         ),
     }
 
 
+
+
+
+def build_radar_intelligence(
+    search_opportunities,
+    placements,
+    configuration_audit,
+    budget_saturation,
+    creatives,
+    creative_master,
+):
+    signals = []
+
+    search_summary = (
+        search_opportunities.get(
+            "summary",
+            {}
+        )
+    )
+
+    if safe_int(
+        search_summary.get(
+            "query_gap_count"
+        )
+    ) > 0:
+        signals.append({
+            "type": "search_gap",
+            "severity": "opportunity",
+            "title": (
+                "Конверсионные запросы отсутствуют как отдельные ключи"
+            ),
+            "value": safe_int(
+                search_summary.get(
+                    "query_gap_count"
+                )
+            ),
+            "metric": "запросов",
+            "details": (
+                f"Order из Query Gap: "
+                f"{safe_float(search_summary.get('query_gap_orders')):.2f}"
+            ),
+            "goto": "queries",
+        })
+
+    placement_summary = (
+        placements.get(
+            "summary",
+            {}
+        )
+    )
+
+    if safe_int(
+        placement_summary.get(
+            "waste_candidates"
+        )
+    ) > 0:
+        signals.append({
+            "type": "placement_waste",
+            "severity": "critical",
+            "title": (
+                "Площадки РСЯ требуют проверки"
+            ),
+            "value": round(
+                safe_float(
+                    placement_summary.get(
+                        "waste_candidate_spend"
+                    )
+                ),
+                2,
+            ),
+            "metric": "₽ расхода",
+            "details": (
+                f"{safe_int(placement_summary.get('waste_candidates'))} "
+                "площадок-кандидатов"
+            ),
+            "goto": "placements",
+        })
+
+    config_summary = (
+        configuration_audit.get(
+            "summary",
+            {}
+        )
+    )
+
+    config_conflicts = (
+        safe_int(
+            config_summary.get(
+                "conflicts_raise"
+            )
+        )
+        + safe_int(
+            config_summary.get(
+                "conflicts_lower"
+            )
+        )
+    )
+
+    if config_conflicts:
+        signals.append({
+            "type": "configuration_conflict",
+            "severity": "critical",
+            "title": (
+                "Корректировки противоречат фактическому CPA"
+            ),
+            "value": (
+                config_conflicts
+            ),
+            "metric": "конфликтов",
+            "details": (
+                "Baseline теперь считается по конкретной кампании."
+            ),
+            "goto": "configaudit",
+        })
+
+    saturation_summary = (
+        budget_saturation.get(
+            "summary",
+            {}
+        )
+    )
+
+    if safe_int(
+        saturation_summary.get(
+            "saturated"
+        )
+    ) > 0:
+        signals.append({
+            "type": "budget_saturation",
+            "severity": "warning",
+            "title": (
+                "Есть кампании с признаками насыщения бюджета"
+            ),
+            "value": safe_int(
+                saturation_summary.get(
+                    "saturated"
+                )
+            ),
+            "metric": "кампаний",
+            "details": (
+                "CPA растёт на верхнем квартиле дневного расхода."
+            ),
+            "goto": "budget",
+        })
+
+    if safe_int(
+        saturation_summary.get(
+            "scalable"
+        )
+    ) > 0:
+        signals.append({
+            "type": "budget_scalable",
+            "severity": "opportunity",
+            "title": (
+                "Есть кампании без заметного ухудшения CPA при росте расхода"
+            ),
+            "value": safe_int(
+                saturation_summary.get(
+                    "scalable"
+                )
+            ),
+            "metric": "кампаний",
+            "details": (
+                "Кандидаты на ручную проверку масштабирования."
+            ),
+            "goto": "budget",
+        })
+
+    if (
+        creative_master.get(
+            "available"
+        )
+    ):
+        signals.append({
+            "type": "creative_master",
+            "severity": "opportunity",
+            "title": (
+                "Creative Lab использует element-level статистику Мастера отчётов"
+            ),
+            "value": safe_int(
+                creative_master.get(
+                    "summary",
+                    {}
+                ).get(
+                    "rows"
+                )
+            ),
+            "metric": "элементов",
+            "details": (
+                "Изображения и видео анализируются отдельно."
+            ),
+            "goto": "creatives",
+        })
+
+    signals.sort(
+        key=lambda x: {
+            "critical": 0,
+            "warning": 1,
+            "opportunity": 2,
+        }.get(
+            x[
+                "severity"
+            ],
+            9,
+        )
+    )
+
+    return {
+        "signals": (
+            signals
+        ),
+        "summary": {
+            "signals": len(
+                signals
+            ),
+            "critical": sum(
+                1
+                for x in signals
+                if x[
+                    "severity"
+                ]
+                == "critical"
+            ),
+            "opportunities": sum(
+                1
+                for x in signals
+                if x[
+                    "severity"
+                ]
+                == "opportunity"
+            ),
+        },
+    }
 
 
 # ============================================================
