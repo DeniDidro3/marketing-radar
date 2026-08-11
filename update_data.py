@@ -5231,9 +5231,6 @@ def build_priority_goals_intelligence(
                 ),
                 "goal_source": goal_source,
                 "optimization_goals": goals,
-                "priority_goals": (
-                    priority_goals
-                ),
             })
 
     rows.sort(
@@ -6631,6 +6628,142 @@ def build_change_intelligence(
     }
 
 
+
+def get_keyword_device_performance():
+    """
+    Actual historical performance by keyword + device.
+    This is much more useful than only hasSearchVolume YES/NO:
+    it shows where impressions/clicks/cost/conversions really happened.
+    """
+    fields = [
+        "CampaignId",
+        "CampaignName",
+        "AdGroupId",
+        "AdGroupName",
+        "CriterionId",
+        "Criterion",
+        "Device",
+        "Impressions",
+        "Clicks",
+        "Cost",
+        "Conversions",
+    ]
+
+    text = request_advanced_report(
+        "MR Keyword device performance v12",
+        "CRITERIA_PERFORMANCE_REPORT",
+        fields,
+        order_by=[
+            {
+                "Field": "Cost",
+                "SortOrder": "DESCENDING",
+            }
+        ],
+        max_attempts=30,
+    )
+
+    rows = parse_header_tsv(
+        text
+    )
+
+    result = defaultdict(
+        lambda: {
+            "campaign_id": "",
+            "campaign_name": "",
+            "ad_group_id": "",
+            "ad_group_name": "",
+            "keyword": "",
+            "devices": {},
+        }
+    )
+
+    for row in rows:
+        criterion_id = str(
+            row.get(
+                "CriterionId"
+            )
+            or ""
+        ).strip()
+
+        if not criterion_id:
+            continue
+
+        device = str(
+            row.get(
+                "Device"
+            )
+            or "UNKNOWN"
+        ).strip()
+
+        m = metrics_from_report_row(
+            row
+        )
+
+        item = result[
+            criterion_id
+        ]
+
+        item[
+            "campaign_id"
+        ] = str(
+            row.get(
+                "CampaignId"
+            )
+            or ""
+        )
+
+        item[
+            "campaign_name"
+        ] = (
+            row.get(
+                "CampaignName"
+            )
+            or ""
+        )
+
+        item[
+            "ad_group_id"
+        ] = str(
+            row.get(
+                "AdGroupId"
+            )
+            or ""
+        )
+
+        item[
+            "ad_group_name"
+        ] = (
+            row.get(
+                "AdGroupName"
+            )
+            or ""
+        )
+
+        item[
+            "keyword"
+        ] = (
+            row.get(
+                "Criterion"
+            )
+            or item[
+                "keyword"
+            ]
+        )
+
+        item[
+            "devices"
+        ][
+            device
+        ] = {
+            **m,
+        }
+
+    return dict(
+        result
+    )
+
+
+
 def build_delivery_diagnostics(
     keyword_configuration,
     keywords,
@@ -6665,6 +6798,19 @@ def build_delivery_diagnostics(
                 )
             ] = perf
 
+    # Исторический фактический разрез по устройствам.
+    try:
+        device_performance = (
+            get_keyword_device_performance()
+        )
+    except Exception as error:
+        print(
+            "Keyword device performance skipped:",
+            error,
+            flush=True,
+        )
+        device_performance = {}
+
     region_groups = defaultdict(
         list
     )
@@ -6696,7 +6842,6 @@ def build_delivery_diagnostics(
         )
 
     # hasSearchVolume: не более 20 запросов / 60 сек.
-    # Оставляем запас и берём самые крупные конфигурации регионов.
     ranked_region_groups = sorted(
         region_groups.items(),
         key=lambda item: (
@@ -6731,12 +6876,9 @@ def build_delivery_diagnostics(
         rows_for_regions,
     ) in selected_groups:
         unique_keywords = []
-
         seen = set()
 
-        for row in (
-            rows_for_regions
-        ):
+        for row in rows_for_regions:
             keyword = str(
                 row.get(
                     "keyword"
@@ -6753,15 +6895,13 @@ def build_delivery_diagnostics(
             if (
                 not keyword
                 or not normalized
-                or normalized
-                in seen
+                or normalized in seen
             ):
                 continue
 
             seen.add(
                 normalized
             )
-
             unique_keywords.append(
                 keyword
             )
@@ -6808,14 +6948,12 @@ def build_delivery_diagnostics(
 
         except Exception as error:
             failed_configs += 1
-
             print(
                 "hasSearchVolume skipped for regions",
                 regions,
                 error,
                 flush=True,
             )
-
             continue
 
         for item in (
@@ -6847,6 +6985,13 @@ def build_delivery_diagnostics(
 
         perf = (
             perf_by_criterion.get(
+                keyword_id,
+                {}
+            )
+        )
+
+        actual_device = (
+            device_performance.get(
                 keyword_id,
                 {}
             )
@@ -6983,10 +7128,35 @@ def build_delivery_diagnostics(
                 "forecast_unavailable"
             )
 
+        devices = (
+            actual_device.get(
+                "devices",
+                {}
+            )
+        )
+
+        # Удобные агрегаты для фронта.
+        desktop = (
+            devices.get(
+                "DESKTOP",
+                {}
+            )
+        )
+        mobile = (
+            devices.get(
+                "MOBILE",
+                {}
+            )
+        )
+        tablet = (
+            devices.get(
+                "TABLET",
+                {}
+            )
+        )
+
         output.append({
-            "keyword_id": (
-                keyword_id
-            ),
+            "keyword_id": keyword_id,
             "keyword": (
                 row.get(
                     "keyword"
@@ -6996,6 +7166,15 @@ def build_delivery_diagnostics(
             "campaign_id": str(
                 row.get(
                     "campaign_id"
+                )
+                or ""
+            ),
+            "campaign_name": (
+                actual_device.get(
+                    "campaign_name"
+                )
+                or perf.get(
+                    "campaign_name"
                 )
                 or ""
             ),
@@ -7009,6 +7188,15 @@ def build_delivery_diagnostics(
                 ad_group.get(
                     "name"
                 )
+                or actual_device.get(
+                    "ad_group_name"
+                )
+                or ""
+            ),
+            "ad_group_type": (
+                ad_group.get(
+                    "type"
+                )
                 or ""
             ),
             "region_ids": list(
@@ -7016,19 +7204,15 @@ def build_delivery_diagnostics(
             ),
             "state": state,
             "status": status,
-            "serving_status": (
-                serving
-            ),
-            "impressions_60d": (
-                impressions
-            ),
-            "clicks_60d": (
-                clicks
-            ),
+            "serving_status": serving,
+
+            "impressions_60d": impressions,
+            "clicks_60d": clicks,
             "cost_60d": round(
                 cost,
                 2,
             ),
+
             "has_search_volume": (
                 all_devices
             ),
@@ -7055,6 +7239,84 @@ def build_delivery_diagnostics(
                 ).get(
                     "Desktops"
                 )
+            ),
+
+            "device_performance": devices,
+
+            "desktop_impressions": safe_int(
+                desktop.get(
+                    "impressions"
+                )
+            ),
+            "desktop_clicks": safe_int(
+                desktop.get(
+                    "clicks"
+                )
+            ),
+            "desktop_cost": round(
+                safe_float(
+                    desktop.get(
+                        "cost"
+                    )
+                ),
+                2,
+            ),
+            "desktop_order_conversions": safe_float(
+                desktop.get(
+                    "order_conversions"
+                )
+            ),
+
+            "mobile_impressions": safe_int(
+                mobile.get(
+                    "impressions"
+                )
+            ),
+            "mobile_clicks": safe_int(
+                mobile.get(
+                    "clicks"
+                )
+            ),
+            "mobile_cost": round(
+                safe_float(
+                    mobile.get(
+                        "cost"
+                    )
+                ),
+                2,
+            ),
+            "mobile_order_conversions": safe_float(
+                mobile.get(
+                    "order_conversions"
+                )
+            ),
+
+            "tablet_impressions": safe_int(
+                tablet.get(
+                    "impressions"
+                )
+            ),
+            "tablet_clicks": safe_int(
+                tablet.get(
+                    "clicks"
+                )
+            ),
+            "tablet_cost": round(
+                safe_float(
+                    tablet.get(
+                        "cost"
+                    )
+                ),
+                2,
+            ),
+            "tablet_order_conversions": safe_float(
+                tablet.get(
+                    "order_conversions"
+                )
+            ),
+
+            "segment": (
+                diagnosis
             ),
             "diagnosis": diagnosis,
         })
@@ -7129,17 +7391,20 @@ def build_delivery_diagnostics(
                 selected_groups
             )
             - failed_configs,
-            "region_configs_failed": (
-                failed_configs
-            ),
+            "region_configs_failed": failed_configs,
             "region_configs_skipped_due_to_rate_limit": (
                 skipped_region_configs
             ),
+            "device_performance_keywords": len(
+                device_performance
+            ),
         },
         "note": (
-            "hasSearchVolume — предварительный YES/NO прогноз наличия "
-            "поискового спроса, а не историческое число показов. "
-            "Диагностика сравнивает его с реальными показами ключа."
+            "Диагностика объединяет два источника: "
+            "KeywordsResearch.hasSearchVolume даёт предварительный прогноз "
+            "наличия спроса по устройствам, а CRITERIA_PERFORMANCE_REPORT "
+            "показывает фактические показы, клики, расход и конверсии "
+            "по Desktop / Mobile / Tablet."
         ),
     }
 
@@ -8155,6 +8420,8 @@ def build_placement_intelligence():
         )
 
     goal_fields = [
+        "CampaignId",
+        "CampaignName",
         "Placement",
         "ExternalNetworkName",
         "Impressions",
@@ -8312,6 +8579,8 @@ def build_placement_intelligence():
 
     try:
         quality_fields = [
+            "CampaignId",
+            "CampaignName",
             "Placement",
             "ExternalNetworkName",
             "Sessions",
@@ -8356,6 +8625,12 @@ def build_placement_intelligence():
 
     for row in quality_rows:
         key = (
+            str(
+                row.get(
+                    "CampaignId"
+                )
+                or ""
+            ).strip(),
             str(
                 row.get(
                     "Placement"
@@ -8604,6 +8879,18 @@ def build_placement_intelligence():
 
         prelim.append({
             **m,
+            "campaign_id": (
+                item.get(
+                    "campaign_id",
+                    ""
+                )
+            ),
+            "campaign_name": (
+                item.get(
+                    "campaign_name",
+                    ""
+                )
+            ),
             "placement": (
                 item[
                     "placement"
@@ -8822,6 +9109,8 @@ def build_placement_intelligence():
 
 def build_geo_intelligence():
     fields = [
+        "CampaignId",
+        "CampaignName",
         "TargetingLocationName",
         "LocationOfPresenceName",
         "Impressions",
@@ -8831,7 +9120,7 @@ def build_geo_intelligence():
     ]
 
     text = request_advanced_report(
-        "MR Geo goals v8",
+        "MR Geo goals v12",
         "CUSTOM_REPORT",
         fields,
         order_by=[
@@ -8850,6 +9139,20 @@ def build_geo_intelligence():
     presence = {}
 
     for row in rows:
+        campaign_id = str(
+            row.get(
+                "CampaignId"
+            )
+            or ""
+        )
+
+        campaign_name = (
+            row.get(
+                "CampaignName"
+            )
+            or ""
+        )
+
         target = str(
             row.get(
                 "TargetingLocationName"
@@ -8869,6 +9172,8 @@ def build_geo_intelligence():
         )
 
         pairs.append({
+            "campaign_id": campaign_id,
+            "campaign_name": campaign_name,
             "targeting_location": target,
             "presence_location": actual,
             "differs_from_target": (
@@ -8892,8 +9197,15 @@ def build_geo_intelligence():
             **m,
         })
 
-        if actual not in presence:
-            presence[actual] = {
+        key = (
+            campaign_id,
+            actual,
+        )
+
+        if key not in presence:
+            presence[key] = {
+                "campaign_id": campaign_id,
+                "campaign_name": campaign_name,
                 "location": actual,
                 "impressions": 0,
                 "clicks": 0,
@@ -8903,7 +9215,10 @@ def build_geo_intelligence():
                 "survey_conversions": 0.0,
             }
 
-        p = presence[actual]
+        p = presence[
+            key
+        ]
+
         p["impressions"] += m["impressions"]
         p["clicks"] += m["clicks"]
         p["cost"] += m["cost"]
@@ -8919,6 +9234,8 @@ def build_geo_intelligence():
 
     for p in presence.values():
         presence_rows.append({
+            "campaign_id": p["campaign_id"],
+            "campaign_name": p["campaign_name"],
             "location": p["location"],
             **metrics_from_values(
                 p["impressions"],
@@ -8955,8 +9272,8 @@ def build_geo_intelligence():
     )
 
     return {
-        "locations": presence_rows[:500],
-        "target_presence_pairs": pairs[:1000],
+        "locations": presence_rows[:5000],
+        "target_presence_pairs": pairs[:10000],
         "summary": {
             "actual_locations": len(
                 presence_rows
@@ -9000,12 +9317,15 @@ def build_geo_intelligence():
         },
     }
 
+
 # ------------------------------------------------------------
 # AUDIENCE INTELLIGENCE
 # ------------------------------------------------------------
 
 def build_audience_intelligence():
     fields = [
+        "CampaignId",
+        "CampaignName",
         "Age",
         "Gender",
         "IncomeGrade",
@@ -9017,7 +9337,7 @@ def build_audience_intelligence():
     ]
 
     text = request_advanced_report(
-        "MR Audience goals v8",
+        "MR Audience goals v12",
         "CUSTOM_REPORT",
         fields,
         order_by=[
@@ -9057,6 +9377,18 @@ def build_audience_intelligence():
         ]
 
         items.append({
+            "campaign_id": str(
+                row.get(
+                    "CampaignId"
+                )
+                or ""
+            ),
+            "campaign_name": (
+                row.get(
+                    "CampaignName"
+                )
+                or ""
+            ),
             "age": row.get("Age")
             or "UNKNOWN",
             "gender": row.get("Gender")
@@ -9070,7 +9402,8 @@ def build_audience_intelligence():
             **m,
         })
 
-    # Основная бизнес-оценка аудитории — Order.
+    # Этот baseline нужен как fallback.
+    # На фронте после выбора кампаний baseline пересчитывается заново.
     account_order_cpa = (
         total_cost
         / total_orders
@@ -9094,9 +9427,7 @@ def build_audience_intelligence():
         ):
             item["status"] = "opportunity"
             item["recommendation"] = (
-                "Order CPA заметно ниже среднего: "
-                "кандидат на повышающую корректировку "
-                "после ручной проверки."
+                "Order CPA заметно ниже baseline."
             )
 
         elif (
@@ -9113,9 +9444,7 @@ def build_audience_intelligence():
         ):
             item["status"] = "expensive"
             item["recommendation"] = (
-                "Order-эффективность слабая: "
-                "кандидат на понижающую корректировку "
-                "после ручной проверки."
+                "Order-эффективность слабая."
             )
 
         else:
@@ -9132,7 +9461,7 @@ def build_audience_intelligence():
     )
 
     return {
-        "rows": items[:1000],
+        "rows": items[:10000],
         "summary": {
             "segments": len(items),
             "account_order_cpa": round(
@@ -9169,6 +9498,7 @@ def build_audience_intelligence():
             ),
         },
     }
+
 
 # ------------------------------------------------------------
 # SEARCH POSITION ECONOMICS
@@ -9972,7 +10302,7 @@ def build_report(
         flush=True,
     )
     print(
-        "MARKETING RADAR v11",
+        "MARKETING RADAR v12",
         flush=True,
     )
     print(
@@ -10129,17 +10459,6 @@ def build_report(
         build_negative_keyword_audit(
             campaign_configuration,
             search_queries,
-        )
-    )
-
-    print(
-        "\n9/20 Priority Goals Intelligence",
-        flush=True,
-    )
-    priority_goals = (
-        build_priority_goals_intelligence(
-            campaign_configuration,
-            strategy_configuration,
         )
     )
 
@@ -10470,12 +10789,6 @@ def build_report(
                 {}
             )
         ),
-        "priority_goals": (
-            priority_goals.get(
-                "summary",
-                {}
-            )
-        ),
         "negative_keywords": (
             negative_keywords.get(
                 "summary",
@@ -10526,7 +10839,7 @@ def build_report(
             "period_days": (
                 REPORT_DAYS
             ),
-            "report_version": 11,
+            "report_version": 12,
             "conversion_attribution_model": (
                 CONVERSION_ATTRIBUTION_MODEL
             ),
@@ -10540,7 +10853,14 @@ def build_report(
                 "поле выводится со значением 0."
             ),
             "creative_method": (
-                "strict_asset_attribution_v11"
+                "strict_asset_attribution_v12"
+            ),
+            "creative_master_report_note": (
+                "Новый Мастер отчётов Директа умеет группировать по "
+                "Название изображения / ID видео / Превью видео, однако "
+                "эти element-level dimensions пока отсутствуют в публичном "
+                "Reports API. OAuth Direct API не может получить ту же "
+                "разбивку для multi-asset responsive ads."
             ),
             "creative_limitation": (
                 "Reports API не предоставляет CreativeId / AdImageHash "
