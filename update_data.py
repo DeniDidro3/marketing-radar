@@ -9290,7 +9290,26 @@ def build_placement_intelligence():
             or ""
         ).strip()
 
+        campaign_id = str(
+            row.get(
+                "CampaignId"
+            )
+            or ""
+        ).strip()
+
+        campaign_name = str(
+            row.get(
+                "CampaignName"
+            )
+            or ""
+        ).strip()
+
+        # ВАЖНО: площадка должна быть отдельной строкой в каждой кампании.
+        # Раньше ключ был только (placement, network), поэтому одинаковый
+        # домен склеивался между всеми кампаниями и фильтр кампаний
+        # на frontend физически не мог работать.
         key = (
+            campaign_id,
             placement,
             network,
         )
@@ -9299,6 +9318,12 @@ def build_placement_intelligence():
             grouped[
                 key
             ] = {
+                "campaign_id": (
+                    campaign_id
+                ),
+                "campaign_name": (
+                    campaign_name
+                ),
                 "placement": (
                     placement
                 ),
@@ -9471,11 +9496,14 @@ def build_placement_intelligence():
             ),
         })
 
-    order_cpas = sorted(
-        x[
-            "order_cpa"
-        ]
-        for x in prelim
+    # Baseline CPA считаем ОТДЕЛЬНО внутри каждой кампании.
+    # Иначе площадка одной дорогой кампании сравнивалась с CPA другой,
+    # что давало бессмысленный статус strong/normal.
+    campaign_order_cpas = defaultdict(
+        list
+    )
+
+    for x in prelim:
         if (
             x[
                 "order_conversions"
@@ -9483,18 +9511,54 @@ def build_placement_intelligence():
             and x[
                 "order_cpa"
             ] > 0
-        )
-    )
+        ):
+            campaign_order_cpas[
+                str(
+                    x.get(
+                        "campaign_id"
+                    )
+                    or ""
+                )
+            ].append(
+                x[
+                    "order_cpa"
+                ]
+            )
 
-    baseline_order_cpa = (
-        median(
-            order_cpas
+    campaign_baseline_order_cpa = {
+        campaign_id: median(
+            sorted(
+                values
+            )
         )
-        if order_cpas
-        else 0
-    )
+        for (
+            campaign_id,
+            values,
+        )
+        in campaign_order_cpas.items()
+        if values
+    }
 
     for item in prelim:
+        baseline_order_cpa = (
+            campaign_baseline_order_cpa.get(
+                str(
+                    item.get(
+                        "campaign_id"
+                    )
+                    or ""
+                ),
+                0,
+            )
+        )
+
+        item[
+            "campaign_baseline_order_cpa"
+        ] = round(
+            baseline_order_cpa,
+            2,
+        )
+
         if (
             item[
                 "conversions"
@@ -9579,6 +9643,21 @@ def build_placement_intelligence():
             "placements": len(
                 prelim
             ),
+            "campaigns": len({
+                str(
+                    x.get(
+                        "campaign_id"
+                    )
+                    or ""
+                )
+                for x in prelim
+                if str(
+                    x.get(
+                        "campaign_id"
+                    )
+                    or ""
+                )
+            }),
             "goal_columns_found": len(
                 goal_column_names
             ),
@@ -9603,10 +9682,19 @@ def build_placement_intelligence():
             "failed_windows": (
                 failed_windows
             ),
-            "baseline_order_cpa": round(
-                baseline_order_cpa,
-                2,
-            ),
+            "campaign_baseline_order_cpa": {
+                str(
+                    campaign_id
+                ): round(
+                    value,
+                    2,
+                )
+                for (
+                    campaign_id,
+                    value,
+                )
+                in campaign_baseline_order_cpa.items()
+            },
             "waste_candidates": len(
                 waste_rows
             ),
@@ -11988,7 +12076,7 @@ def build_report(
         flush=True,
     )
     print(
-        "MARKETING RADAR v13",
+        "MARKETING RADAR v13.1",
         flush=True,
     )
     print(
@@ -12561,7 +12649,7 @@ def build_report(
             "period_days": (
                 REPORT_DAYS
             ),
-            "report_version": 13,
+            "report_version": "13.1",
             "conversion_attribution_model": (
                 CONVERSION_ATTRIBUTION_MODEL
             ),
