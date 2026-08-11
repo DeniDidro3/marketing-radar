@@ -50,6 +50,9 @@ MIN_CLICKS_FOR_TREND = 5
 
 PBKDF2_ITERATIONS = 600_000
 
+# Все денежные показатели Reports API запрашиваем без НДС.
+INCLUDE_VAT = "NO"
+
 
 # ============================================================
 # TRACKED CONVERSIONS
@@ -398,6 +401,7 @@ def make_report_name(
             "fields": fields,
             "date_from": str(date_from),
             "date_to": str(date_to),
+            "include_vat": INCLUDE_VAT,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -485,7 +489,7 @@ def request_report(
         "ReportType": report_type,
         "DateRangeType": "CUSTOM_DATE",
         "Format": "TSV",
-        "IncludeVAT": "YES",
+        "IncludeVAT": INCLUDE_VAT,
         "IncludeDiscount": "YES",
     }
 
@@ -3538,6 +3542,7 @@ def advanced_report_name(prefix, report_type, fields, date_from, date_to, filter
             "filters": filters or [],
             "attribution_models": attribution_models or [],
             "goals": goals or [],
+            "include_vat": INCLUDE_VAT,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -3645,7 +3650,7 @@ def request_advanced_report(
             "CUSTOM_DATE"
         ),
         "Format": "TSV",
-        "IncludeVAT": "YES",
+        "IncludeVAT": INCLUDE_VAT,
         "IncludeDiscount": "YES",
     }
 
@@ -9967,7 +9972,7 @@ def build_report(
         flush=True,
     )
     print(
-        "MARKETING RADAR v10",
+        "MARKETING RADAR v11",
         flush=True,
     )
     print(
@@ -10513,10 +10518,15 @@ def build_report(
             "source": (
                 "yandex_direct"
             ),
+            "include_vat": False,
+            "money_note": (
+                "Cost, CPC, CPA, AvgEffectiveBid и другие денежные "
+                "показатели Reports API запрошены с IncludeVAT=NO."
+            ),
             "period_days": (
                 REPORT_DAYS
             ),
-            "report_version": 10,
+            "report_version": 11,
             "conversion_attribution_model": (
                 CONVERSION_ATTRIBUTION_MODEL
             ),
@@ -10530,7 +10540,7 @@ def build_report(
                 "поле выводится со значением 0."
             ),
             "creative_method": (
-                "strict_asset_attribution_v10"
+                "strict_asset_attribution_v11"
             ),
             "creative_limitation": (
                 "Reports API не предоставляет CreativeId / AdImageHash "
