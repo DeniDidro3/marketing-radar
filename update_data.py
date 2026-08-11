@@ -31,7 +31,12 @@ CREATIVES_URL = "https://api.direct.yandex.com/json/v5/creatives"
 CAMPAIGNS_URL = "https://api.direct.yandex.com/json/v501/campaigns"
 RETARGETINGLISTS_URL = "https://api.direct.yandex.com/json/v5/retargetinglists"
 STRATEGIES_URL = "https://api.direct.yandex.com/json/v501/strategies"
-KEYWORDS_URL = "https://api.direct.yandex.com/json/v5/keywords"
+KEYWORDS_URL = "https://api.direct.yandex.com/json/v501/keywords"
+ADGROUPS_URL = "https://api.direct.yandex.com/json/v501/adgroups"
+BIDS_URL = "https://api.direct.yandex.com/json/v501/bids"
+CHANGES_URL = "https://api.direct.yandex.com/json/v501/changes"
+BIDMODIFIERS_URL = "https://api.direct.yandex.com/json/v501/bidmodifiers"
+KEYWORDS_RESEARCH_URL = "https://api.direct.yandex.com/json/v501/keywordsresearch"
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "data" / "report.enc"
@@ -170,6 +175,204 @@ def chunks(items, size):
         size
     ):
         yield items[i:i + size]
+
+
+
+# ============================================================
+# PREVIOUS ENCRYPTED REPORT
+# ============================================================
+
+def decrypt_existing_report():
+    """
+    Читаем предыдущий report.enc перед перезаписью.
+    Нужен только для сравнений day-over-day:
+    auction snapshots и Changes timestamp.
+    """
+    if not OUT.exists():
+        return {}
+
+    try:
+        envelope = json.loads(
+            OUT.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        salt = base64.b64decode(
+            envelope["salt"]
+        )
+        nonce = base64.b64decode(
+            envelope["nonce"]
+        )
+        ciphertext = base64.b64decode(
+            envelope["ciphertext"]
+        )
+
+        iterations = safe_int(
+            envelope.get(
+                "iterations",
+                PBKDF2_ITERATIONS,
+            ),
+            PBKDF2_ITERATIONS,
+        )
+
+        key = hashlib.pbkdf2_hmac(
+            "sha256",
+            REPORT_PASSWORD.encode(
+                "utf-8"
+            ),
+            salt,
+            iterations,
+            dklen=32,
+        )
+
+        plaintext = AESGCM(
+            key
+        ).decrypt(
+            nonce,
+            ciphertext,
+            None,
+        )
+
+        report = json.loads(
+            plaintext.decode(
+                "utf-8"
+            )
+        )
+
+        print(
+            "Previous encrypted report: loaded",
+            flush=True,
+        )
+
+        return report
+
+    except Exception as error:
+        print(
+            "Previous encrypted report: unavailable:",
+            error,
+            flush=True,
+        )
+
+        return {}
+
+
+def micro_money(value):
+    """
+    Bids / BidModifiers monetary values use micros.
+    """
+    if value in (
+        None,
+        "",
+        "-",
+        "--",
+    ):
+        return 0.0
+
+    return round(
+        safe_float(
+            value
+        )
+        / 1_000_000,
+        2,
+    )
+
+
+def percent_delta(
+    current,
+    previous,
+):
+    current = safe_float(
+        current
+    )
+    previous = safe_float(
+        previous
+    )
+
+    if previous <= 0:
+        return None
+
+    return round(
+        (
+            current
+            - previous
+        )
+        / previous
+        * 100,
+        2,
+    )
+
+
+def aggregate_conversion_rows(
+    rows,
+):
+    impressions = sum(
+        safe_int(
+            x.get(
+                "impressions"
+            )
+        )
+        for x in rows
+    )
+
+    clicks = sum(
+        safe_int(
+            x.get(
+                "clicks"
+            )
+        )
+        for x in rows
+    )
+
+    cost = sum(
+        safe_float(
+            x.get(
+                "cost"
+            )
+        )
+        for x in rows
+    )
+
+    order = sum(
+        safe_float(
+            x.get(
+                "order_conversions"
+            )
+        )
+        for x in rows
+    )
+
+    webinar = sum(
+        safe_float(
+            x.get(
+                "webinar_conversions"
+            )
+        )
+        for x in rows
+    )
+
+    survey = sum(
+        safe_float(
+            x.get(
+                "survey_conversions"
+            )
+        )
+        for x in rows
+    )
+
+    return metrics_from_values(
+        impressions,
+        clicks,
+        cost,
+        (
+            order
+            + webinar
+            + survey
+        ),
+        order,
+        webinar,
+        survey,
+    )
 
 
 # ============================================================
@@ -1464,11 +1667,6 @@ def create_performance_item(
 
         "proxy_spend": 0.0,
 
-        "shared_proxy_impressions": 0,
-        "shared_proxy_clicks": 0,
-        "shared_proxy_spend": 0.0,
-        "shared_asset_count": 0,
-
         "unattributed_impressions": 0,
 
         "unattributed_clicks": 0,
@@ -1558,34 +1756,6 @@ def add_stats(
             "proxy_spend"
         ] += row["cost"]
 
-    elif attribution == "shared_proxy":
-        # Контекстная proxy-атрибуция: статистика объявления
-        # присваивается каждому визуалу, который присутствовал в нём.
-        # Это НЕ точная asset-level атрибуция, но позволяет сравнивать
-        # контексты использования креатива вместо вывода нулей.
-        item[
-            "proxy_impressions"
-        ] += row["impressions"]
-
-        item[
-            "proxy_clicks"
-        ] += row["clicks"]
-
-        item[
-            "proxy_spend"
-        ] += row["cost"]
-
-        item[
-            "shared_proxy_impressions"
-        ] += row["impressions"]
-
-        item[
-            "shared_proxy_clicks"
-        ] += row["clicks"]
-
-        item[
-            "shared_proxy_spend"
-        ] += row["cost"]
 
     item["daily"].append({
         "date": row["date"],
@@ -1613,14 +1783,19 @@ def build_asset_performance(
     ad_asset_map,
 ):
     """
-    Главная логика v5.
+    ВАЖНО: Reports API группирует статистику максимум по AdId /
+    AdFormat и НЕ предоставляет CreativeId / AdImageHash как
+    статистическое измерение.
 
-    1. Dedicated IMAGE_AD -> exact.
-    2. Dedicated VIDEO_AD -> exact.
-    3. TEXT_AD + одна картинка -> proxy.
-    4. TEXT_AD + одно видео и VIDEO row -> exact/proxy.
-    5. RESPONSIVE с несколькими ассетами ->
-       не распределяем статистику.
+    Поэтому:
+    - dedicated image/video ad -> exact;
+    - объявление с единственным визуальным ассетом -> proxy;
+    - responsive/combinatorial ad с несколькими визуалами ->
+      НЕ распределяем одну и ту же статистику между ассетами.
+
+    Последний случай специально остаётся unattributable, иначе сайт
+    показывал бы одинаковые показатели нескольких картинок и создавал
+    ложное ощущение asset-level статистики.
     """
 
     performances = {}
@@ -1630,25 +1805,39 @@ def build_asset_performance(
         row,
     ):
         key = (
-            asset["asset_key"],
-            row["campaign_id"],
-            row["network"],
+            asset[
+                "asset_key"
+            ],
+            row[
+                "campaign_id"
+            ],
+            row[
+                "network"
+            ],
         )
 
         if key not in performances:
-            performances[key] = (
+            performances[
+                key
+            ] = (
                 create_performance_item(
                     asset,
                     row,
                 )
             )
 
-        return performances[key]
+        return performances[
+            key
+        ]
 
     for row in ad_rows:
-        assets = ad_asset_map.get(
-            row["ad_id"],
-            []
+        assets = (
+            ad_asset_map.get(
+                row[
+                    "ad_id"
+                ],
+                [],
+            )
         )
 
         if not assets:
@@ -1657,63 +1846,76 @@ def build_asset_performance(
         images = [
             a
             for a in assets
-            if a["kind"] == "image"
+            if a[
+                "kind"
+            ] == "image"
         ]
 
         videos = [
             a
             for a in assets
-            if a["kind"] == "video"
+            if a[
+                "kind"
+            ] == "video"
         ]
 
         smart_assets = [
             a
             for a in assets
-            if a["kind"] == "smart"
+            if a[
+                "kind"
+            ] == "smart"
         ]
 
         ad_format = str(
             row.get(
                 "ad_format",
-                ""
+                "",
             )
         ).upper()
-
-        # ====================================================
-        # RESPONSIVE / MULTI-ASSET
-        # ====================================================
 
         responsive_assets = [
             a
             for a in assets
             if a.get(
                 "ad_asset_mode"
-            ) == "responsive_multi"
+            )
+            == "responsive_multi"
         ]
 
         if responsive_assets:
-            # Если у responsive ровно один image asset
-            # и строка не VIDEO — можем использовать proxy.
             responsive_images = [
                 a
-                for a in responsive_assets
-                if a["kind"] == "image"
+                for a
+                in responsive_assets
+                if a[
+                    "kind"
+                ] == "image"
             ]
 
             responsive_videos = [
                 a
-                for a in responsive_assets
-                if a["kind"] == "video"
+                for a
+                in responsive_assets
+                if a[
+                    "kind"
+                ] == "video"
             ]
 
+            # Если ассет реально один, proxy допустим:
+            # никакого второго визуала, которому можно ошибочно
+            # приписать те же клики.
             if (
-                ad_format == "VIDEO"
+                ad_format
+                == "VIDEO"
                 and len(
                     responsive_videos
                 ) == 1
             ):
                 item = get_item(
-                    responsive_videos[0],
+                    responsive_videos[
+                        0
+                    ],
                     row,
                 )
 
@@ -1726,13 +1928,16 @@ def build_asset_performance(
                 continue
 
             if (
-                ad_format != "VIDEO"
+                ad_format
+                != "VIDEO"
                 and len(
                     responsive_images
                 ) == 1
             ):
                 item = get_item(
-                    responsive_images[0],
+                    responsive_images[
+                        0
+                    ],
                     row,
                 )
 
@@ -1744,15 +1949,10 @@ def build_asset_performance(
 
                 continue
 
-            # Если ассетов несколько, Direct не отдаёт статистику
-            # конкретного изображения внутри responsive-объявления.
-            # Вместо нулей используем shared/context proxy:
-            # каждому ассету присваиваем статистику объявления, в котором
-            # он участвовал. Это позволяет оценить контекст использования,
-            # но НЕ является точной индивидуальной атрибуцией.
             target_assets = (
                 responsive_videos
-                if ad_format == "VIDEO"
+                if ad_format
+                == "VIDEO"
                 else responsive_images
             )
 
@@ -1762,37 +1962,73 @@ def build_asset_performance(
                     row,
                 )
 
-                item["shared_asset_count"] = max(
-                    item.get(
-                        "shared_asset_count",
-                        0
-                    ),
-                    len(
-                        target_assets
-                    ),
+                # Сохраняем только общий контекст объявления.
+                # Эти значения НИГДЕ не используются как CTR/CPC
+                # самого креатива.
+                item[
+                    "unattributed_impressions"
+                ] += row[
+                    "impressions"
+                ]
+
+                item[
+                    "unattributed_clicks"
+                ] += row[
+                    "clicks"
+                ]
+
+                item[
+                    "unattributed_spend"
+                ] += row[
+                    "cost"
+                ]
+
+                item[
+                    "unattributed_ad_ids"
+                ].add(
+                    row[
+                        "ad_id"
+                    ]
                 )
 
-                add_stats(
-                    item,
-                    row,
-                    "shared_proxy",
+                item[
+                    "ad_ids"
+                ].add(
+                    row[
+                        "ad_id"
+                    ]
                 )
+
+                if row[
+                    "ad_group_id"
+                ]:
+                    item[
+                        "ad_group_ids"
+                    ].add(
+                        row[
+                            "ad_group_id"
+                        ]
+                    )
 
             continue
 
-        # ====================================================
-        # VIDEO ROW
-        # ====================================================
-
-        if ad_format == "VIDEO":
-            if len(videos) == 1:
+        # VIDEO row.
+        if (
+            ad_format
+            == "VIDEO"
+        ):
+            if len(
+                videos
+            ) == 1:
                 item = get_item(
                     videos[0],
                     row,
                 )
 
-                mode = videos[0].get(
-                    "ad_asset_mode"
+                mode = (
+                    videos[0].get(
+                        "ad_asset_mode"
+                    )
                 )
 
                 attribution = (
@@ -1810,10 +2046,7 @@ def build_asset_performance(
 
             continue
 
-        # ====================================================
-        # DEDICATED IMAGE AD
-        # ====================================================
-
+        # Dedicated image ad.
         dedicated_images = [
             a
             for a in images
@@ -1827,7 +2060,9 @@ def build_asset_performance(
             dedicated_images
         ) == 1:
             item = get_item(
-                dedicated_images[0],
+                dedicated_images[
+                    0
+                ],
                 row,
             )
 
@@ -1839,14 +2074,8 @@ def build_asset_performance(
 
             continue
 
-        # ====================================================
-        # NORMAL TEXT/DYNAMIC AD WITH ONE IMAGE
-        #
-        # Вот главное изменение:
-        # всю non-video статистику объявления
-        # используем как proxy статистику картинки.
-        # ====================================================
-
+        # Text/dynamic ad with one image extension:
+        # proxy, because the ad has exactly one visual image.
         extension_images = [
             a
             for a in images
@@ -1860,7 +2089,9 @@ def build_asset_performance(
             extension_images
         ) == 1:
             item = get_item(
-                extension_images[0],
+                extension_images[
+                    0
+                ],
                 row,
             )
 
@@ -1872,15 +2103,13 @@ def build_asset_performance(
 
             continue
 
-        # ====================================================
-        # SMART
-        # ====================================================
-
         if len(
             smart_assets
         ) == 1:
             item = get_item(
-                smart_assets[0],
+                smart_assets[
+                    0
+                ],
                 row,
             )
 
@@ -1890,21 +2119,17 @@ def build_asset_performance(
                 "proxy",
             )
 
-    # ========================================================
-    # FINALIZE
-    # ========================================================
-
     result = []
 
-    for item in performances.values():
+    for item in (
+        performances.values()
+    ):
         impressions = item[
             "impressions"
         ]
-
         clicks = item[
             "clicks"
         ]
-
         spend = item[
             "spend"
         ]
@@ -1918,24 +2143,31 @@ def build_asset_performance(
         )
 
         avg_cpc = (
-            spend / clicks
+            spend
+            / clicks
             if clicks > 0
             else 0
         )
 
-        item["spend"] = round(
+        item[
+            "spend"
+        ] = round(
             spend,
-            2
+            2,
         )
 
-        item["ctr"] = round(
+        item[
+            "ctr"
+        ] = round(
             ctr,
-            3
+            3,
         )
 
-        item["avg_cpc"] = round(
+        item[
+            "avg_cpc"
+        ] = round(
             avg_cpc,
-            2
+            2,
         )
 
         item.update(
@@ -1943,9 +2175,24 @@ def build_asset_performance(
                 spend,
                 clicks,
                 {
-                    "order_conversions": item.get("order_conversions", 0),
-                    "webinar_conversions": item.get("webinar_conversions", 0),
-                    "survey_conversions": item.get("survey_conversions", 0),
+                    "order_conversions": (
+                        item.get(
+                            "order_conversions",
+                            0,
+                        )
+                    ),
+                    "webinar_conversions": (
+                        item.get(
+                            "webinar_conversions",
+                            0,
+                        )
+                    ),
+                    "survey_conversions": (
+                        item.get(
+                            "survey_conversions",
+                            0,
+                        )
+                    ),
                 },
             )
         )
@@ -1956,7 +2203,7 @@ def build_asset_performance(
             item[
                 "exact_spend"
             ],
-            2
+            2,
         )
 
         item[
@@ -1965,16 +2212,7 @@ def build_asset_performance(
             item[
                 "proxy_spend"
             ],
-            2
-        )
-
-        item[
-            "shared_proxy_spend"
-        ] = round(
-            item[
-                "shared_proxy_spend"
-            ],
-            2
+            2,
         )
 
         item[
@@ -1983,11 +2221,15 @@ def build_asset_performance(
             item[
                 "unattributed_spend"
             ],
-            2
+            2,
         )
 
-        item["ad_ids"] = sorted(
-            item["ad_ids"]
+        item[
+            "ad_ids"
+        ] = sorted(
+            item[
+                "ad_ids"
+            ]
         )
 
         item[
@@ -2014,7 +2256,6 @@ def build_asset_performance(
             ]
         )
 
-        # Итоговый уровень уверенности.
         if (
             item[
                 "exact_impressions"
@@ -2028,31 +2269,10 @@ def build_asset_performance(
             ] = "exact"
 
         elif (
-            item.get(
-                "shared_proxy_impressions",
-                0
-            ) > 0
-            and item[
-                "exact_impressions"
-            ] == 0
-            and (
-                item[
-                    "proxy_impressions"
-                ]
-                ==
-                item.get(
-                    "shared_proxy_impressions",
-                    0
-                )
-            )
-        ):
             item[
-                "attribution"
-            ] = "shared_proxy"
-
-        elif item[
-            "impressions"
-        ] > 0:
+                "impressions"
+            ] > 0
+        ):
             item[
                 "attribution"
             ] = "proxy"
@@ -2060,18 +2280,79 @@ def build_asset_performance(
         else:
             item[
                 "attribution"
-            ] = "unattributable"
+            ] = (
+                "unattributable"
+            )
 
-        result.append(item)
+        item[
+            "individual_stats_available"
+        ] = (
+            item[
+                "attribution"
+            ]
+            in (
+                "exact",
+                "proxy",
+            )
+        )
+
+        item[
+            "context_only"
+        ] = (
+            item[
+                "attribution"
+            ]
+            == "unattributable"
+            and (
+                item[
+                    "unattributed_impressions"
+                ] > 0
+                or item[
+                    "unattributed_clicks"
+                ] > 0
+                or item[
+                    "unattributed_spend"
+                ] > 0
+            )
+        )
+
+        result.append(
+            item
+        )
 
     print(
         "Asset performance:",
-        len(result),
+        len(
+            result
+        ),
+        flush=True,
+    )
+
+    print(
+        "Assets with individual/proxy stats:",
+        sum(
+            1
+            for x in result
+            if x[
+                "individual_stats_available"
+            ]
+        ),
+        flush=True,
+    )
+
+    print(
+        "Multi-asset contexts without asset-level stats:",
+        sum(
+            1
+            for x in result
+            if x[
+                "context_only"
+            ]
+        ),
         flush=True,
     )
 
     return result
-
 
 # ============================================================
 # METADATA
@@ -2577,19 +2858,6 @@ def analyze_performance(
             "статистике объявления, "
             "к которому привязан этот "
             "единственный визуал."
-        )
-
-    elif item[
-        "attribution"
-    ] == "shared_proxy":
-        reason += (
-            " Это контекстная proxy-оценка: "
-            "в объявлении несколько визуалов, "
-            "поэтому статистика объявления "
-            "используется для каждого присутствующего "
-            "ассета. Сравнение полезно для поиска "
-            "сильных контекстов, но не доказывает "
-            "индивидуальный вклад картинки."
         )
 
     return {
@@ -3288,16 +3556,34 @@ def request_advanced_report(
     order_by=None,
     with_header=True,
     days=REPORT_DAYS,
+    date_from_override=None,
+    date_to_override=None,
+    max_attempts=45,
 ):
-    today = datetime.now(timezone.utc).date()
-    date_from = today - timedelta(days=days)
-    date_to = today - timedelta(days=1)
+    today = datetime.now(
+        timezone.utc
+    ).date()
+
+    date_to = (
+        date_to_override
+        if date_to_override is not None
+        else today
+        - timedelta(days=1)
+    )
+
+    date_from = (
+        date_from_override
+        if date_from_override is not None
+        else today
+        - timedelta(days=days)
+    )
 
     if "Conversions" in fields:
         if attribution_models is None:
             attribution_models = [
                 CONVERSION_ATTRIBUTION_MODEL
             ]
+
         if goals is None:
             goals = TRACKED_GOAL_IDS
 
@@ -3313,67 +3599,145 @@ def request_advanced_report(
     )
 
     headers = {
-        "Authorization": f"Bearer {TOKEN}",
+        "Authorization": (
+            f"Bearer {TOKEN}"
+        ),
         "Accept-Language": "ru",
         "processingMode": "auto",
         "returnMoneyInMicros": "false",
         "skipReportHeader": "true",
-        "skipColumnHeader": "false" if with_header else "true",
+        "skipColumnHeader": (
+            "false"
+            if with_header
+            else "true"
+        ),
         "skipReportSummary": "true",
     }
 
     selection = {
-        "DateFrom": date_from.isoformat(),
-        "DateTo": date_to.isoformat(),
+        "DateFrom": (
+            date_from.isoformat()
+        ),
+        "DateTo": (
+            date_to.isoformat()
+        ),
     }
+
     if filters:
-        selection["Filter"] = filters
+        selection[
+            "Filter"
+        ] = filters
 
     params = {
-        "SelectionCriteria": selection,
-        "FieldNames": fields,
-        "ReportName": report_name,
-        "ReportType": report_type,
-        "DateRangeType": "CUSTOM_DATE",
+        "SelectionCriteria": (
+            selection
+        ),
+        "FieldNames": (
+            fields
+        ),
+        "ReportName": (
+            report_name
+        ),
+        "ReportType": (
+            report_type
+        ),
+        "DateRangeType": (
+            "CUSTOM_DATE"
+        ),
         "Format": "TSV",
         "IncludeVAT": "YES",
         "IncludeDiscount": "YES",
     }
 
     if attribution_models:
-        params["AttributionModels"] = attribution_models
+        params[
+            "AttributionModels"
+        ] = attribution_models
+
     if goals:
-        params["Goals"] = [str(x) for x in goals]
+        params[
+            "Goals"
+        ] = [
+            str(x)
+            for x in goals
+        ]
+
     if order_by:
-        params["OrderBy"] = order_by
+        params[
+            "OrderBy"
+        ] = order_by
 
-    body = {"params": params}
+    body = {
+        "params": params
+    }
 
-    for attempt in range(1, 21):
-        print(f"[advanced {attempt}/20] {report_name}", flush=True)
+    for attempt in range(
+        1,
+        max_attempts + 1,
+    ):
+        print(
+            f"[advanced {attempt}/{max_attempts}] "
+            f"{report_name}",
+            flush=True,
+        )
+
         response = requests.post(
             REPORTS_URL,
             headers=headers,
             json=body,
             timeout=120,
         )
-        print(f"HTTP {response.status_code}", flush=True)
+
+        print(
+            f"HTTP {response.status_code}",
+            flush=True,
+        )
 
         if response.status_code == 200:
             return response.text
 
-        if response.status_code in (201, 202):
-            retry_in = safe_int(response.headers.get("retryIn", 10), 10)
-            time.sleep(retry_in)
+        if response.status_code in (
+            201,
+            202,
+        ):
+            retry_in = safe_int(
+                response.headers.get(
+                    "retryIn",
+                    10
+                ),
+                10,
+            )
+
+            # Не создаём слишком плотный polling.
+            retry_in = int(
+                clamp(
+                    retry_in,
+                    1,
+                    30,
+                )
+            )
+
+            time.sleep(
+                retry_in
+            )
             continue
 
-        print(response.text, flush=True)
-        raise RuntimeError(
-            f"Advanced report {prefix}: HTTP {response.status_code}: {response.text[:700]}"
+        print(
+            response.text,
+            flush=True,
         )
 
-    raise RuntimeError(f"Advanced report timeout: {prefix}")
+        raise RuntimeError(
+            f"Advanced report "
+            f"{prefix}: HTTP "
+            f"{response.status_code}: "
+            f"{response.text[:700]}"
+        )
 
+    raise RuntimeError(
+        f"Advanced report timeout: "
+        f"{prefix}"
+    )
 
 def parse_header_tsv(text):
     if not text or not text.strip():
@@ -4925,6 +5289,2471 @@ def build_priority_goals_intelligence(
     }
 
 
+
+# ------------------------------------------------------------
+# API-ONLY INTELLIGENCE
+# ------------------------------------------------------------
+
+def get_adgroup_configuration(
+    campaign_ids
+):
+    rows = []
+    by_id = {}
+
+    numeric_ids = sorted({
+        int(x)
+        for x in campaign_ids
+        if str(
+            x
+        ).isdigit()
+    })
+
+    for campaign_chunk in chunks(
+        numeric_ids,
+        10,
+    ):
+        payload = {
+            "method": "get",
+            "params": {
+                "SelectionCriteria": {
+                    "CampaignIds": (
+                        campaign_chunk
+                    ),
+                },
+                "FieldNames": [
+                    "Id",
+                    "Name",
+                    "CampaignId",
+                    "RegionIds",
+                    "NegativeKeywords",
+                    "Status",
+                    "ServingStatus",
+                    "Type",
+                ],
+                "Page": {
+                    "Limit": 10000,
+                    "Offset": 0,
+                },
+            },
+        }
+
+        result = direct_api(
+            ADGROUPS_URL,
+            payload,
+            "AdGroups.get",
+        )
+
+        for item in result.get(
+            "AdGroups",
+            []
+        ):
+            row = {
+                "id": str(
+                    item.get(
+                        "Id"
+                    )
+                    or ""
+                ),
+                "name": (
+                    item.get(
+                        "Name"
+                    )
+                    or ""
+                ),
+                "campaign_id": str(
+                    item.get(
+                        "CampaignId"
+                    )
+                    or ""
+                ),
+                "region_ids": [
+                    int(x)
+                    for x in (
+                        item.get(
+                            "RegionIds"
+                        )
+                        or [0]
+                    )
+                ],
+                "negative_keywords": [
+                    str(x)
+                    for x in (
+                        (
+                            item.get(
+                                "NegativeKeywords"
+                            )
+                            or {}
+                        ).get(
+                            "Items"
+                        )
+                        or []
+                    )
+                ],
+                "status": (
+                    item.get(
+                        "Status"
+                    )
+                    or ""
+                ),
+                "serving_status": (
+                    item.get(
+                        "ServingStatus"
+                    )
+                    or ""
+                ),
+                "type": (
+                    item.get(
+                        "Type"
+                    )
+                    or ""
+                ),
+            }
+
+            rows.append(
+                row
+            )
+
+            if row[
+                "id"
+            ]:
+                by_id[
+                    row[
+                        "id"
+                    ]
+                ] = row
+
+    return {
+        "rows": rows,
+        "by_id": by_id,
+        "summary": {
+            "ad_groups": len(
+                rows
+            ),
+            "rarely_served": sum(
+                1
+                for x in rows
+                if x[
+                    "serving_status"
+                ]
+                == "RARELY_SERVED"
+            ),
+        },
+    }
+
+
+def pick_auction_value(
+    items,
+    position_contains,
+    field,
+):
+    values = []
+
+    for item in (
+        items
+        or []
+    ):
+        position = str(
+            item.get(
+                "Position"
+            )
+            or ""
+        ).upper()
+
+        wanted = str(
+            position_contains
+            or ""
+        ).upper()
+
+        # SearchPrices uses readable enums such as PREMIUMBLOCK /
+        # FOOTERBLOCK, while AuctionBids uses P1n / P2n positions.
+        if wanted == "PREMIUM":
+            position_match = (
+                "PREMIUM" in position
+                or position.startswith(
+                    "P1"
+                )
+            )
+
+        elif wanted == "FOOTER":
+            position_match = (
+                "FOOTER" in position
+                or position.startswith(
+                    "P2"
+                )
+            )
+
+        else:
+            position_match = (
+                wanted in position
+            )
+
+        if not position_match:
+            continue
+
+        raw = item.get(
+            field
+        )
+
+        if raw is None:
+            continue
+
+        values.append(
+            micro_money(
+                raw
+            )
+        )
+
+    values = [
+        x
+        for x in values
+        if x > 0
+    ]
+
+    return (
+        min(
+            values
+        )
+        if values
+        else 0
+    )
+
+
+def pick_context_coverage(
+    coverage,
+    target_probability,
+):
+    items = (
+        (
+            coverage
+            or {}
+        ).get(
+            "Items"
+        )
+        or []
+    )
+
+    if not items:
+        return {
+            "probability": None,
+            "price": 0,
+        }
+
+    def normalized_probability(
+        value
+    ):
+        value = safe_float(
+            value
+        )
+
+        # API may represent probability as 0..1.
+        return (
+            value * 100
+            if 0 <= value <= 1
+            else value
+        )
+
+    best = min(
+        items,
+        key=lambda item: abs(
+            normalized_probability(
+                item.get(
+                    "Probability"
+                )
+            )
+            - target_probability
+        ),
+    )
+
+    return {
+        "probability": round(
+            normalized_probability(
+                best.get(
+                    "Probability"
+                )
+            ),
+            2,
+        ),
+        "price": micro_money(
+            best.get(
+                "Price"
+            )
+        ),
+    }
+
+
+def build_auction_intelligence(
+    keyword_configuration,
+    campaign_configuration,
+    previous_report,
+):
+    keyword_rows = (
+        keyword_configuration.get(
+            "rows",
+            []
+        )
+    )
+
+    keyword_map = {
+        str(
+            row.get(
+                "id"
+            )
+        ): row
+        for row in keyword_rows
+        if str(
+            row.get(
+                "id"
+            )
+            or ""
+        ).strip()
+    }
+
+    campaign_name_map = {
+        str(
+            row.get(
+                "id"
+            )
+        ): (
+            row.get(
+                "name"
+            )
+            or ""
+        )
+        for row in (
+            campaign_configuration.get(
+                "campaigns",
+                []
+            )
+        )
+    }
+
+    keyword_ids = [
+        int(x)
+        for x in keyword_map.keys()
+        if str(
+            x
+        ).isdigit()
+    ]
+
+    bid_rows = []
+    fallback_batches = 0
+
+    full_fields = [
+        "CampaignId",
+        "AdGroupId",
+        "KeywordId",
+        "ServingStatus",
+        "Bid",
+        "ContextBid",
+        "StrategyPriority",
+        "CompetitorsBids",
+        "SearchPrices",
+        "ContextCoverage",
+        "MinSearchPrice",
+        "CurrentSearchPrice",
+        "AuctionBids",
+    ]
+
+    minimal_fields = [
+        "CampaignId",
+        "AdGroupId",
+        "KeywordId",
+        "ServingStatus",
+        "Bid",
+        "ContextBid",
+        "StrategyPriority",
+    ]
+
+    for id_chunk in chunks(
+        keyword_ids,
+        1000,
+    ):
+        payload = {
+            "method": "get",
+            "params": {
+                "SelectionCriteria": {
+                    "KeywordIds": (
+                        id_chunk
+                    ),
+                },
+                "FieldNames": (
+                    full_fields
+                ),
+                "Page": {
+                    "Limit": 10000,
+                    "Offset": 0,
+                },
+            },
+        }
+
+        try:
+            result = direct_api(
+                BIDS_URL,
+                payload,
+                "Bids.get full auction",
+            )
+
+        except Exception:
+            fallback_batches += 1
+
+            payload[
+                "params"
+            ][
+                "FieldNames"
+            ] = minimal_fields
+
+            result = direct_api(
+                BIDS_URL,
+                payload,
+                "Bids.get fallback",
+            )
+
+        bid_rows.extend(
+            result.get(
+                "Bids",
+                []
+            )
+        )
+
+    previous_rows = {
+        str(
+            x.get(
+                "keyword_id"
+            )
+        ): x
+        for x in (
+            (
+                previous_report
+                or {}
+            ).get(
+                "auction_intelligence",
+                {}
+            ).get(
+                "rows",
+                []
+            )
+        )
+    }
+
+    output = []
+
+    for row in bid_rows:
+        keyword_id = str(
+            row.get(
+                "KeywordId"
+            )
+            or ""
+        )
+
+        meta = keyword_map.get(
+            keyword_id,
+            {}
+        )
+
+        search_prices = (
+            row.get(
+                "SearchPrices"
+            )
+            or []
+        )
+
+        auction_bids = (
+            row.get(
+                "AuctionBids"
+            )
+            or []
+        )
+
+        competitors_raw = (
+            row.get(
+                "CompetitorsBids"
+            )
+            or []
+        )
+
+        competitors = [
+            micro_money(
+                value
+            )
+            for value in competitors_raw
+            if safe_float(
+                value
+            ) > 0
+        ]
+
+        current_bid = micro_money(
+            row.get(
+                "Bid"
+            )
+        )
+
+        context_bid = micro_money(
+            row.get(
+                "ContextBid"
+            )
+        )
+
+        min_search_price = (
+            micro_money(
+                row.get(
+                    "MinSearchPrice"
+                )
+            )
+        )
+
+        current_search_price = (
+            micro_money(
+                row.get(
+                    "CurrentSearchPrice"
+                )
+            )
+        )
+
+        premium_required_bid = (
+            pick_auction_value(
+                auction_bids,
+                "PREMIUM",
+                "Bid",
+            )
+        )
+
+        premium_click_price = (
+            pick_auction_value(
+                search_prices,
+                "PREMIUM",
+                "Price",
+            )
+        )
+
+        footer_required_bid = (
+            pick_auction_value(
+                auction_bids,
+                "FOOTER",
+                "Bid",
+            )
+        )
+
+        coverage_50 = (
+            pick_context_coverage(
+                row.get(
+                    "ContextCoverage"
+                ),
+                50,
+            )
+        )
+
+        coverage_100 = (
+            pick_context_coverage(
+                row.get(
+                    "ContextCoverage"
+                ),
+                100,
+            )
+        )
+
+        premium_gap_pct = (
+            round(
+                (
+                    premium_required_bid
+                    - current_bid
+                )
+                / current_bid
+                * 100,
+                2,
+            )
+            if (
+                current_bid > 0
+                and premium_required_bid > 0
+            )
+            else None
+        )
+
+        competitor_median = (
+            round(
+                median(
+                    competitors
+                ),
+                2,
+            )
+            if competitors
+            else 0
+        )
+
+        previous = (
+            previous_rows.get(
+                keyword_id,
+                {}
+            )
+        )
+
+        current_price_change = (
+            percent_delta(
+                current_search_price,
+                previous.get(
+                    "current_search_price"
+                ),
+            )
+        )
+
+        premium_bid_change = (
+            percent_delta(
+                premium_required_bid,
+                previous.get(
+                    "premium_required_bid"
+                ),
+            )
+        )
+
+        serving_status = (
+            row.get(
+                "ServingStatus"
+            )
+            or meta.get(
+                "serving_status"
+            )
+            or ""
+        )
+
+        if (
+            serving_status
+            == "RARELY_SERVED"
+        ):
+            signal = (
+                "rarely_served"
+            )
+
+        elif (
+            min_search_price > 0
+            and current_bid > 0
+            and current_bid
+            < min_search_price
+        ):
+            signal = (
+                "below_search_entry"
+            )
+
+        elif (
+            premium_gap_pct
+            is not None
+            and premium_gap_pct
+            >= 50
+        ):
+            signal = (
+                "premium_expensive"
+            )
+
+        elif (
+            current_price_change
+            is not None
+            and current_price_change
+            >= 20
+        ):
+            signal = (
+                "auction_heating"
+            )
+
+        elif (
+            premium_required_bid > 0
+            or current_search_price > 0
+        ):
+            signal = "normal"
+
+        else:
+            signal = (
+                "limited_data"
+            )
+
+        output.append({
+            "keyword_id": (
+                keyword_id
+            ),
+            "keyword": (
+                meta.get(
+                    "keyword"
+                )
+                or ""
+            ),
+            "campaign_id": str(
+                row.get(
+                    "CampaignId"
+                )
+                or meta.get(
+                    "campaign_id"
+                )
+                or ""
+            ),
+            "campaign_name": (
+                campaign_name_map.get(
+                    str(
+                        row.get(
+                            "CampaignId"
+                        )
+                        or meta.get(
+                            "campaign_id"
+                        )
+                        or ""
+                    ),
+                    "",
+                )
+            ),
+            "ad_group_id": str(
+                row.get(
+                    "AdGroupId"
+                )
+                or meta.get(
+                    "ad_group_id"
+                )
+                or ""
+            ),
+            "serving_status": (
+                serving_status
+            ),
+            "strategy_priority": (
+                row.get(
+                    "StrategyPriority"
+                )
+            ),
+            "bid": current_bid,
+            "context_bid": (
+                context_bid
+            ),
+            "min_search_price": (
+                min_search_price
+            ),
+            "current_search_price": (
+                current_search_price
+            ),
+            "premium_required_bid": (
+                premium_required_bid
+            ),
+            "premium_click_price": (
+                premium_click_price
+            ),
+            "footer_required_bid": (
+                footer_required_bid
+            ),
+            "premium_gap_pct": (
+                premium_gap_pct
+            ),
+            "competitor_bid_median": (
+                competitor_median
+            ),
+            "competitors_count": len(
+                competitors
+            ),
+            "context_coverage_50": (
+                coverage_50
+            ),
+            "context_coverage_100": (
+                coverage_100
+            ),
+            "current_search_price_change_pct": (
+                current_price_change
+            ),
+            "premium_required_bid_change_pct": (
+                premium_bid_change
+            ),
+            "signal": signal,
+            "full_auction_data": (
+                bool(
+                    search_prices
+                    or auction_bids
+                    or competitors
+                )
+            ),
+        })
+
+    output.sort(
+        key=lambda x: (
+            0
+            if x[
+                "signal"
+            ]
+            in (
+                "below_search_entry",
+                "auction_heating",
+                "premium_expensive",
+                "rarely_served",
+            )
+            else 1,
+            -(
+                x[
+                    "premium_gap_pct"
+                ]
+                or 0
+            ),
+            x[
+                "keyword"
+            ],
+        )
+    )
+
+    return {
+        "rows": output[
+            :10000
+        ],
+        "summary": {
+            "keywords": len(
+                output
+            ),
+            "full_auction_rows": sum(
+                1
+                for x in output
+                if x[
+                    "full_auction_data"
+                ]
+            ),
+            "fallback_batches": (
+                fallback_batches
+            ),
+            "below_search_entry": sum(
+                1
+                for x in output
+                if x[
+                    "signal"
+                ]
+                == "below_search_entry"
+            ),
+            "auction_heating": sum(
+                1
+                for x in output
+                if x[
+                    "signal"
+                ]
+                == "auction_heating"
+            ),
+            "premium_expensive": sum(
+                1
+                for x in output
+                if x[
+                    "signal"
+                ]
+                == "premium_expensive"
+            ),
+            "rarely_served": sum(
+                1
+                for x in output
+                if x[
+                    "signal"
+                ]
+                == "rarely_served"
+            ),
+        },
+        "note": (
+            "Аукционные значения — текущий снимок Bids.get. "
+            "День-к-дню считается относительно предыдущего зашифрованного "
+            "report.enc, если он доступен."
+        ),
+    }
+
+
+def build_change_intelligence(
+    campaign_configuration,
+    previous_report,
+):
+    previous_meta = (
+        (
+            previous_report
+            or {}
+        ).get(
+            "change_intelligence",
+            {}
+        )
+    )
+
+    timestamp = (
+        previous_meta.get(
+            "timestamp"
+        )
+        or (
+            (
+                previous_report
+                or {}
+            ).get(
+                "meta",
+                {}
+            ).get(
+                "updated_at"
+            )
+        )
+    )
+
+    if not timestamp:
+        timestamp = (
+            datetime.now(
+                timezone.utc
+            )
+            - timedelta(
+                days=1
+            )
+        ).replace(
+            microsecond=0
+        ).isoformat().replace(
+            "+00:00",
+            "Z",
+        )
+
+    # Нормализуем ISO с +00:00 в Z.
+    timestamp = str(
+        timestamp
+    ).replace(
+        "+00:00",
+        "Z",
+    )
+
+    result = direct_api(
+        CHANGES_URL,
+        {
+            "method": (
+                "checkCampaigns"
+            ),
+            "params": {
+                "Timestamp": (
+                    timestamp
+                ),
+            },
+        },
+        "Changes.checkCampaigns",
+    )
+
+    campaign_map = {
+        str(
+            x.get(
+                "id"
+            )
+        ): x
+        for x in (
+            campaign_configuration.get(
+                "campaigns",
+                []
+            )
+        )
+    }
+
+    current_ids = set(
+        campaign_map.keys()
+    )
+
+    changed_campaigns = [
+        item
+        for item in (
+            result.get(
+                "Campaigns"
+            )
+            or []
+        )
+        if str(
+            item.get(
+                "CampaignId"
+            )
+            or ""
+        )
+        in current_ids
+    ]
+
+    changed_ids = [
+        int(
+            item[
+                "CampaignId"
+            ]
+        )
+        for item
+        in changed_campaigns
+        if str(
+            item.get(
+                "CampaignId"
+            )
+            or ""
+        ).isdigit()
+    ]
+
+    details_by_campaign = {}
+
+    for campaign_chunk in chunks(
+        changed_ids,
+        1000,
+    ):
+        detail = direct_api(
+            CHANGES_URL,
+            {
+                "method": "check",
+                "params": {
+                    "CampaignIds": (
+                        campaign_chunk
+                    ),
+                    "Timestamp": (
+                        timestamp
+                    ),
+                    "FieldNames": [
+                        "CampaignIds",
+                        "AdGroupIds",
+                        "AdIds",
+                        "CampaignsStat",
+                    ],
+                },
+            },
+            "Changes.check",
+        )
+
+        modified = (
+            detail.get(
+                "Modified"
+            )
+            or {}
+        )
+
+        stat_by_id = {
+            str(
+                x.get(
+                    "CampaignId"
+                )
+            ): x.get(
+                "BorderDate"
+            )
+            for x in (
+                modified.get(
+                    "CampaignsStat"
+                )
+                or []
+            )
+        }
+
+        # AdGroupIds/AdIds в check не несут campaign id.
+        # Сохраняем их в общий bucket запроса; для конкретной кампании
+        # основной источник — ChangesIn.
+        chunk_payload = {
+            "modified_campaign_ids": [
+                str(x)
+                for x in (
+                    modified.get(
+                        "CampaignIds"
+                    )
+                    or []
+                )
+            ],
+            "modified_ad_group_ids": [
+                str(x)
+                for x in (
+                    modified.get(
+                        "AdGroupIds"
+                    )
+                    or []
+                )
+            ],
+            "modified_ad_ids": [
+                str(x)
+                for x in (
+                    modified.get(
+                        "AdIds"
+                    )
+                    or []
+                )
+            ],
+            "stat_by_id": (
+                stat_by_id
+            ),
+        }
+
+        for cid in campaign_chunk:
+            details_by_campaign[
+                str(
+                    cid
+                )
+            ] = chunk_payload
+
+    def snapshot_item(
+        campaign
+    ):
+        return {
+            "name": campaign.get(
+                "name"
+            ),
+            "type": campaign.get(
+                "type"
+            ),
+            "state": campaign.get(
+                "state"
+            ),
+            "status": campaign.get(
+                "status"
+            ),
+            "negative_keywords": (
+                campaign.get(
+                    "negative_keywords"
+                )
+                or []
+            ),
+            "priority_goals": (
+                campaign.get(
+                    "priority_goals"
+                )
+                or []
+            ),
+            "attribution_model": (
+                campaign.get(
+                    "attribution_model"
+                )
+            ),
+            "bidding_strategy": (
+                campaign.get(
+                    "bidding_strategy"
+                )
+                or {}
+            ),
+            "package_strategy_id": (
+                campaign.get(
+                    "package_strategy_id"
+                )
+            ),
+        }
+
+    current_snapshot = {
+        str(
+            campaign.get(
+                "id"
+            )
+        ): snapshot_item(
+            campaign
+        )
+        for campaign in (
+            campaign_configuration.get(
+                "campaigns",
+                []
+            )
+        )
+    }
+
+    previous_snapshot = (
+        previous_meta.get(
+            "configuration_snapshot"
+        )
+        or {}
+    )
+
+    rows = []
+
+    for change in (
+        changed_campaigns
+    ):
+        cid = str(
+            change.get(
+                "CampaignId"
+            )
+            or ""
+        )
+
+        changes_in = (
+            change.get(
+                "ChangesIn"
+            )
+            or []
+        )
+
+        old = (
+            previous_snapshot.get(
+                cid
+            )
+            or {}
+        )
+
+        current = (
+            current_snapshot.get(
+                cid
+            )
+            or {}
+        )
+
+        changed_fields = []
+
+        if old and current:
+            for key in sorted(
+                set(
+                    old.keys()
+                )
+                | set(
+                    current.keys()
+                )
+            ):
+                if (
+                    json.dumps(
+                        old.get(
+                            key
+                        ),
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                    != json.dumps(
+                        current.get(
+                            key
+                        ),
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                ):
+                    changed_fields.append(
+                        key
+                    )
+
+        detail = (
+            details_by_campaign.get(
+                cid,
+                {},
+            )
+        )
+
+        border_date = (
+            (
+                detail.get(
+                    "stat_by_id"
+                )
+                or {}
+            ).get(
+                cid
+            )
+        )
+
+        rows.append({
+            "campaign_id": cid,
+            "campaign_name": (
+                (
+                    campaign_map.get(
+                        cid
+                    )
+                    or {}
+                ).get(
+                    "name"
+                )
+                or cid
+            ),
+            "changes_in": (
+                changes_in
+            ),
+            "changed_fields_from_snapshot": (
+                changed_fields
+            ),
+            "statistics_corrected": (
+                "STAT"
+                in changes_in
+                or bool(
+                    border_date
+                )
+            ),
+            "border_date": (
+                border_date
+            ),
+            "child_changes_detected": (
+                "CHILDREN"
+                in changes_in
+            ),
+            "campaign_settings_changed": (
+                "SELF"
+                in changes_in
+            ),
+            "modified_ad_group_ids_in_batch": (
+                detail.get(
+                    "modified_ad_group_ids",
+                    []
+                )
+            ),
+            "modified_ad_ids_in_batch": (
+                detail.get(
+                    "modified_ad_ids",
+                    []
+                )
+            ),
+        })
+
+    rows.sort(
+        key=lambda x: (
+            0
+            if x[
+                "statistics_corrected"
+            ]
+            else 1,
+            x[
+                "campaign_name"
+            ],
+        )
+    )
+
+    return {
+        "rows": rows,
+        "timestamp": (
+            result.get(
+                "Timestamp"
+            )
+            or datetime.now(
+                timezone.utc
+            ).replace(
+                microsecond=0
+            ).isoformat().replace(
+                "+00:00",
+                "Z",
+            )
+        ),
+        "checked_since": (
+            timestamp
+        ),
+        "configuration_snapshot": (
+            current_snapshot
+        ),
+        "summary": {
+            "changed_campaigns": len(
+                rows
+            ),
+            "campaign_settings": sum(
+                1
+                for x in rows
+                if x[
+                    "campaign_settings_changed"
+                ]
+            ),
+            "child_changes": sum(
+                1
+                for x in rows
+                if x[
+                    "child_changes_detected"
+                ]
+            ),
+            "statistics_corrections": sum(
+                1
+                for x in rows
+                if x[
+                    "statistics_corrected"
+                ]
+            ),
+        },
+    }
+
+
+def build_delivery_diagnostics(
+    keyword_configuration,
+    keywords,
+    adgroup_configuration,
+):
+    config_rows = (
+        keyword_configuration.get(
+            "rows",
+            []
+        )
+    )
+
+    adgroup_map = (
+        adgroup_configuration.get(
+            "by_id",
+            {}
+        )
+    )
+
+    perf_by_criterion = {}
+
+    for perf in keywords:
+        for criterion_id in (
+            perf.get(
+                "criterion_ids",
+                []
+            )
+        ):
+            perf_by_criterion[
+                str(
+                    criterion_id
+                )
+            ] = perf
+
+    region_groups = defaultdict(
+        list
+    )
+
+    for row in config_rows:
+        ad_group = (
+            adgroup_map.get(
+                str(
+                    row.get(
+                        "ad_group_id"
+                    )
+                    or ""
+                ),
+                {},
+            )
+        )
+
+        regions = tuple(
+            ad_group.get(
+                "region_ids"
+            )
+            or [0]
+        )
+
+        region_groups[
+            regions
+        ].append(
+            row
+        )
+
+    # hasSearchVolume: не более 20 запросов / 60 сек.
+    # Оставляем запас и берём самые крупные конфигурации регионов.
+    ranked_region_groups = sorted(
+        region_groups.items(),
+        key=lambda item: (
+            -len(
+                item[1]
+            ),
+            item[0],
+        ),
+    )
+
+    selected_groups = (
+        ranked_region_groups[
+            :18
+        ]
+    )
+
+    skipped_region_configs = max(
+        0,
+        len(
+            ranked_region_groups
+        )
+        - len(
+            selected_groups
+        ),
+    )
+
+    forecast_map = {}
+    failed_configs = 0
+
+    for (
+        regions,
+        rows_for_regions,
+    ) in selected_groups:
+        unique_keywords = []
+
+        seen = set()
+
+        for row in (
+            rows_for_regions
+        ):
+            keyword = str(
+                row.get(
+                    "keyword"
+                )
+                or ""
+            ).strip()
+
+            normalized = (
+                normalize_text(
+                    keyword
+                )
+            )
+
+            if (
+                not keyword
+                or not normalized
+                or normalized
+                in seen
+            ):
+                continue
+
+            seen.add(
+                normalized
+            )
+
+            unique_keywords.append(
+                keyword
+            )
+
+            if len(
+                unique_keywords
+            ) >= 10000:
+                break
+
+        if not unique_keywords:
+            continue
+
+        try:
+            result = direct_api(
+                KEYWORDS_RESEARCH_URL,
+                {
+                    "method": (
+                        "hasSearchVolume"
+                    ),
+                    "params": {
+                        "SelectionCriteria": {
+                            "Keywords": (
+                                unique_keywords
+                            ),
+                            "RegionIds": list(
+                                regions
+                            ),
+                        },
+                        "FieldNames": [
+                            "Keyword",
+                            "RegionIds",
+                            "AllDevices",
+                            "MobilePhones",
+                            "Tablets",
+                            "Desktops",
+                        ],
+                    },
+                },
+                (
+                    "KeywordsResearch."
+                    "hasSearchVolume"
+                ),
+            )
+
+        except Exception as error:
+            failed_configs += 1
+
+            print(
+                "hasSearchVolume skipped for regions",
+                regions,
+                error,
+                flush=True,
+            )
+
+            continue
+
+        for item in (
+            result.get(
+                "HasSearchVolumeResults",
+                []
+            )
+        ):
+            forecast_map[
+                (
+                    regions,
+                    normalize_text(
+                        item.get(
+                            "Keyword"
+                        )
+                    ),
+                )
+            ] = item
+
+    output = []
+
+    for row in config_rows:
+        keyword_id = str(
+            row.get(
+                "id"
+            )
+            or ""
+        )
+
+        perf = (
+            perf_by_criterion.get(
+                keyword_id,
+                {}
+            )
+        )
+
+        ad_group = (
+            adgroup_map.get(
+                str(
+                    row.get(
+                        "ad_group_id"
+                    )
+                    or ""
+                ),
+                {},
+            )
+        )
+
+        regions = tuple(
+            ad_group.get(
+                "region_ids"
+            )
+            or [0]
+        )
+
+        forecast = (
+            forecast_map.get(
+                (
+                    regions,
+                    normalize_text(
+                        row.get(
+                            "keyword"
+                        )
+                    ),
+                )
+            )
+        )
+
+        all_devices = (
+            (
+                forecast
+                or {}
+            ).get(
+                "AllDevices"
+            )
+        )
+
+        impressions = safe_int(
+            perf.get(
+                "impressions"
+            )
+        )
+
+        clicks = safe_int(
+            perf.get(
+                "clicks"
+            )
+        )
+
+        cost = safe_float(
+            perf.get(
+                "cost"
+            )
+        )
+
+        state = (
+            row.get(
+                "state"
+            )
+            or ""
+        )
+
+        status = (
+            row.get(
+                "status"
+            )
+            or ""
+        )
+
+        serving = (
+            row.get(
+                "serving_status"
+            )
+            or ad_group.get(
+                "serving_status"
+            )
+            or ""
+        )
+
+        if (
+            state != "ON"
+            or status
+            not in (
+                "ACCEPTED",
+                "UNKNOWN",
+            )
+        ):
+            diagnosis = (
+                "inactive_or_moderation"
+            )
+
+        elif (
+            serving
+            == "RARELY_SERVED"
+        ):
+            diagnosis = (
+                "rarely_served"
+            )
+
+        elif (
+            impressions == 0
+            and all_devices
+            == "NO"
+        ):
+            diagnosis = (
+                "no_search_demand"
+            )
+
+        elif (
+            impressions == 0
+            and all_devices
+            == "YES"
+        ):
+            diagnosis = (
+                "demand_exists_no_delivery"
+            )
+
+        elif (
+            impressions > 0
+        ):
+            diagnosis = "delivering"
+
+        else:
+            diagnosis = (
+                "forecast_unavailable"
+            )
+
+        output.append({
+            "keyword_id": (
+                keyword_id
+            ),
+            "keyword": (
+                row.get(
+                    "keyword"
+                )
+                or ""
+            ),
+            "campaign_id": str(
+                row.get(
+                    "campaign_id"
+                )
+                or ""
+            ),
+            "ad_group_id": str(
+                row.get(
+                    "ad_group_id"
+                )
+                or ""
+            ),
+            "ad_group_name": (
+                ad_group.get(
+                    "name"
+                )
+                or ""
+            ),
+            "region_ids": list(
+                regions
+            ),
+            "state": state,
+            "status": status,
+            "serving_status": (
+                serving
+            ),
+            "impressions_60d": (
+                impressions
+            ),
+            "clicks_60d": (
+                clicks
+            ),
+            "cost_60d": round(
+                cost,
+                2,
+            ),
+            "has_search_volume": (
+                all_devices
+            ),
+            "mobile_search_volume": (
+                (
+                    forecast
+                    or {}
+                ).get(
+                    "MobilePhones"
+                )
+            ),
+            "tablet_search_volume": (
+                (
+                    forecast
+                    or {}
+                ).get(
+                    "Tablets"
+                )
+            ),
+            "desktop_search_volume": (
+                (
+                    forecast
+                    or {}
+                ).get(
+                    "Desktops"
+                )
+            ),
+            "diagnosis": diagnosis,
+        })
+
+    priority = {
+        "demand_exists_no_delivery": 0,
+        "rarely_served": 1,
+        "inactive_or_moderation": 2,
+        "no_search_demand": 3,
+        "forecast_unavailable": 4,
+        "delivering": 5,
+    }
+
+    output.sort(
+        key=lambda x: (
+            priority.get(
+                x[
+                    "diagnosis"
+                ],
+                99,
+            ),
+            -x[
+                "cost_60d"
+            ],
+            x[
+                "keyword"
+            ],
+        )
+    )
+
+    return {
+        "rows": output[
+            :10000
+        ],
+        "summary": {
+            "keywords": len(
+                output
+            ),
+            "demand_exists_no_delivery": sum(
+                1
+                for x in output
+                if x[
+                    "diagnosis"
+                ]
+                == "demand_exists_no_delivery"
+            ),
+            "no_search_demand": sum(
+                1
+                for x in output
+                if x[
+                    "diagnosis"
+                ]
+                == "no_search_demand"
+            ),
+            "rarely_served": sum(
+                1
+                for x in output
+                if x[
+                    "diagnosis"
+                ]
+                == "rarely_served"
+            ),
+            "delivering": sum(
+                1
+                for x in output
+                if x[
+                    "diagnosis"
+                ]
+                == "delivering"
+            ),
+            "region_configs_checked": len(
+                selected_groups
+            )
+            - failed_configs,
+            "region_configs_failed": (
+                failed_configs
+            ),
+            "region_configs_skipped_due_to_rate_limit": (
+                skipped_region_configs
+            ),
+        },
+        "note": (
+            "hasSearchVolume — предварительный YES/NO прогноз наличия "
+            "поискового спроса, а не историческое число показов. "
+            "Диагностика сравнивает его с реальными показами ключа."
+        ),
+    }
+
+
+def get_bid_modifiers(
+    campaign_ids
+):
+    rows = []
+
+    numeric_ids = sorted({
+        int(x)
+        for x in campaign_ids
+        if str(
+            x
+        ).isdigit()
+    })
+
+    for campaign_chunk in chunks(
+        numeric_ids,
+        10,
+    ):
+        payload = {
+            "method": "get",
+            "params": {
+                "SelectionCriteria": {
+                    "CampaignIds": (
+                        campaign_chunk
+                    ),
+                    "Levels": [
+                        "CAMPAIGN",
+                        "AD_GROUP",
+                    ],
+                },
+                "FieldNames": [
+                    "Id",
+                    "CampaignId",
+                    "AdGroupId",
+                    "Level",
+                    "Type",
+                ],
+                "MobileAdjustmentFieldNames": [
+                    "BidModifier",
+                    "OperatingSystemType",
+                ],
+                "TabletAdjustmentFieldNames": [
+                    "BidModifier",
+                    "OperatingSystemType",
+                ],
+                "DesktopAdjustmentFieldNames": [
+                    "BidModifier",
+                ],
+                "DesktopOnlyAdjustmentFieldNames": [
+                    "BidModifier",
+                ],
+                "DemographicsAdjustmentFieldNames": [
+                    "Gender",
+                    "Age",
+                    "BidModifier",
+                    "Enabled",
+                ],
+                "RetargetingAdjustmentFieldNames": [
+                    "RetargetingConditionId",
+                    "BidModifier",
+                    "Accessible",
+                    "Enabled",
+                ],
+                "RegionalAdjustmentFieldNames": [
+                    "RegionId",
+                    "BidModifier",
+                    "Enabled",
+                ],
+                "VideoAdjustmentFieldNames": [
+                    "BidModifier",
+                ],
+                "SmartAdAdjustmentFieldNames": [
+                    "BidModifier",
+                ],
+                "SerpLayoutAdjustmentFieldNames": [
+                    "SerpLayout",
+                    "BidModifier",
+                    "Enabled",
+                ],
+                "IncomeGradeAdjustmentFieldNames": [
+                    "Grade",
+                    "BidModifier",
+                    "Enabled",
+                ],
+                "AdGroupAdjustmentFieldNames": [
+                    "BidModifier",
+                ],
+                "Page": {
+                    "Limit": 10000,
+                    "Offset": 0,
+                },
+            },
+        }
+
+        result = direct_api(
+            BIDMODIFIERS_URL,
+            payload,
+            "BidModifiers.get",
+        )
+
+        rows.extend(
+            result.get(
+                "BidModifiers",
+                []
+            )
+        )
+
+    return rows
+
+
+def modifier_detail(
+    item
+):
+    modifier_type = str(
+        item.get(
+            "Type"
+        )
+        or ""
+    )
+
+    block_by_type = {
+        "MOBILE_ADJUSTMENT": (
+            "MobileAdjustment"
+        ),
+        "TABLET_ADJUSTMENT": (
+            "TabletAdjustment"
+        ),
+        "DESKTOP_ADJUSTMENT": (
+            "DesktopAdjustment"
+        ),
+        "DESKTOP_ONLY_ADJUSTMENT": (
+            "DesktopOnlyAdjustment"
+        ),
+        "DEMOGRAPHICS_ADJUSTMENT": (
+            "DemographicsAdjustment"
+        ),
+        "RETARGETING_ADJUSTMENT": (
+            "RetargetingAdjustment"
+        ),
+        "REGIONAL_ADJUSTMENT": (
+            "RegionalAdjustment"
+        ),
+        "VIDEO_ADJUSTMENT": (
+            "VideoAdjustment"
+        ),
+        "SMART_AD_ADJUSTMENT": (
+            "SmartAdAdjustment"
+        ),
+        "SERP_LAYOUT_ADJUSTMENT": (
+            "SerpLayoutAdjustment"
+        ),
+        "INCOME_GRADE_ADJUSTMENT": (
+            "IncomeGradeAdjustment"
+        ),
+        "AD_GROUP_ADJUSTMENT": (
+            "AdGroupAdjustment"
+        ),
+    }
+
+    block_name = (
+        block_by_type.get(
+            modifier_type
+        )
+    )
+
+    block = (
+        item.get(
+            block_name
+        )
+        if block_name
+        else None
+    )
+
+    if not isinstance(
+        block,
+        dict,
+    ):
+        block = {}
+
+    coefficient = safe_int(
+        block.get(
+            "BidModifier"
+        ),
+        100,
+    )
+
+    return {
+        "block": block,
+        "coefficient": (
+            coefficient
+        ),
+        "multiplier": round(
+            coefficient
+            / 100,
+            2,
+        ),
+        "enabled": (
+            block.get(
+                "Enabled"
+            )
+            or "YES"
+        ),
+    }
+
+
+def build_configuration_audit(
+    raw_modifiers,
+    campaign_configuration,
+    audience,
+    positions,
+    account_summary,
+):
+    campaign_name_map = {
+        str(
+            x.get(
+                "id"
+            )
+        ): (
+            x.get(
+                "name"
+            )
+            or ""
+        )
+        for x in (
+            campaign_configuration.get(
+                "campaigns",
+                []
+            )
+        )
+    }
+
+    audience_rows = (
+        audience.get(
+            "rows",
+            []
+        )
+    )
+
+    position_rows = (
+        positions.get(
+            "rows",
+            []
+        )
+    )
+
+    account_order_cpa = (
+        safe_float(
+            account_summary.get(
+                "order_cpa"
+            )
+        )
+    )
+
+    output = []
+
+    for item in (
+        raw_modifiers
+    ):
+        modifier_type = (
+            item.get(
+                "Type"
+            )
+            or ""
+        )
+
+        detail = (
+            modifier_detail(
+                item
+            )
+        )
+
+        block = detail[
+            "block"
+        ]
+
+        matching = []
+        comparison_label = ""
+
+        if (
+            modifier_type
+            == "INCOME_GRADE_ADJUSTMENT"
+        ):
+            grade = block.get(
+                "Grade"
+            )
+
+            matching = [
+                x
+                for x
+                in audience_rows
+                if x.get(
+                    "income_grade"
+                )
+                == grade
+            ]
+
+            comparison_label = (
+                f"Доход {grade}"
+            )
+
+        elif (
+            modifier_type
+            == "DEMOGRAPHICS_ADJUSTMENT"
+        ):
+            age = block.get(
+                "Age"
+            )
+
+            gender = block.get(
+                "Gender"
+            )
+
+            matching = [
+                x
+                for x
+                in audience_rows
+                if (
+                    not age
+                    or x.get(
+                        "age"
+                    )
+                    == age
+                )
+                and (
+                    not gender
+                    or x.get(
+                        "gender"
+                    )
+                    == gender
+                )
+            ]
+
+            comparison_label = (
+                f"{age or 'любой возраст'} / "
+                f"{gender or 'любой пол'}"
+            )
+
+        elif (
+            modifier_type
+            in (
+                "MOBILE_ADJUSTMENT",
+                "TABLET_ADJUSTMENT",
+                "DESKTOP_ADJUSTMENT",
+                "DESKTOP_ONLY_ADJUSTMENT",
+            )
+        ):
+            device = {
+                "MOBILE_ADJUSTMENT": "MOBILE",
+                "TABLET_ADJUSTMENT": "TABLET",
+                "DESKTOP_ADJUSTMENT": "DESKTOP",
+                "DESKTOP_ONLY_ADJUSTMENT": "DESKTOP",
+            }[
+                modifier_type
+            ]
+
+            matching = [
+                x
+                for x
+                in audience_rows
+                if x.get(
+                    "device"
+                )
+                == device
+            ]
+
+            comparison_label = (
+                device
+            )
+
+        elif (
+            modifier_type
+            == "SERP_LAYOUT_ADJUSTMENT"
+        ):
+            layout = block.get(
+                "SerpLayout"
+            )
+
+            matching = [
+                x
+                for x
+                in position_rows
+                if x.get(
+                    "slot"
+                )
+                == layout
+            ]
+
+            comparison_label = (
+                layout
+                or ""
+            )
+
+        metrics = (
+            aggregate_conversion_rows(
+                matching
+            )
+            if matching
+            else {
+                "impressions": 0,
+                "clicks": 0,
+                "cost": 0,
+                "order_conversions": 0,
+                "order_cpa": 0,
+            }
+        )
+
+        coefficient = (
+            detail[
+                "coefficient"
+            ]
+        )
+
+        if (
+            detail[
+                "enabled"
+            ]
+            == "NO"
+        ):
+            audit_status = (
+                "disabled"
+            )
+
+        elif not matching:
+            audit_status = (
+                "no_performance_match"
+            )
+
+        elif (
+            coefficient > 100
+            and metrics[
+                "clicks"
+            ] >= 10
+            and (
+                metrics[
+                    "order_conversions"
+                ] == 0
+                or (
+                    account_order_cpa > 0
+                    and metrics[
+                        "order_cpa"
+                    ] > 0
+                    and metrics[
+                        "order_cpa"
+                    ]
+                    >= account_order_cpa
+                    * 1.30
+                )
+            )
+        ):
+            audit_status = (
+                "conflict_raise"
+            )
+
+        elif (
+            coefficient < 100
+            and metrics[
+                "order_conversions"
+            ] >= 3
+            and account_order_cpa > 0
+            and metrics[
+                "order_cpa"
+            ] > 0
+            and metrics[
+                "order_cpa"
+            ]
+            <= account_order_cpa
+            * 0.75
+        ):
+            audit_status = (
+                "conflict_lower"
+            )
+
+        else:
+            audit_status = "ok"
+
+        output.append({
+            "id": str(
+                item.get(
+                    "Id"
+                )
+                or ""
+            ),
+            "campaign_id": str(
+                item.get(
+                    "CampaignId"
+                )
+                or ""
+            ),
+            "campaign_name": (
+                campaign_name_map.get(
+                    str(
+                        item.get(
+                            "CampaignId"
+                        )
+                        or ""
+                    ),
+                    "",
+                )
+            ),
+            "ad_group_id": str(
+                item.get(
+                    "AdGroupId"
+                )
+                or ""
+            ),
+            "level": (
+                item.get(
+                    "Level"
+                )
+                or ""
+            ),
+            "type": (
+                modifier_type
+            ),
+            "coefficient": (
+                coefficient
+            ),
+            "multiplier": (
+                detail[
+                    "multiplier"
+                ]
+            ),
+            "enabled": (
+                detail[
+                    "enabled"
+                ]
+            ),
+            "parameters": (
+                block
+            ),
+            "comparison_label": (
+                comparison_label
+            ),
+            "performance": (
+                metrics
+            ),
+            "audit_status": (
+                audit_status
+            ),
+        })
+
+    status_priority = {
+        "conflict_raise": 0,
+        "conflict_lower": 1,
+        "ok": 2,
+        "no_performance_match": 3,
+        "disabled": 4,
+    }
+
+    output.sort(
+        key=lambda x: (
+            status_priority.get(
+                x[
+                    "audit_status"
+                ],
+                99,
+            ),
+            x[
+                "campaign_name"
+            ],
+            x[
+                "type"
+            ],
+        )
+    )
+
+    return {
+        "rows": output[
+            :10000
+        ],
+        "summary": {
+            "modifiers": len(
+                output
+            ),
+            "campaign_level": sum(
+                1
+                for x in output
+                if x[
+                    "level"
+                ]
+                == "CAMPAIGN"
+            ),
+            "ad_group_level": sum(
+                1
+                for x in output
+                if x[
+                    "level"
+                ]
+                == "AD_GROUP"
+            ),
+            "conflicts_raise": sum(
+                1
+                for x in output
+                if x[
+                    "audit_status"
+                ]
+                == "conflict_raise"
+            ),
+            "conflicts_lower": sum(
+                1
+                for x in output
+                if x[
+                    "audit_status"
+                ]
+                == "conflict_lower"
+            ),
+        },
+        "note": (
+            "Конфликт — диагностический сигнал, а не рекомендация "
+            "автоматически менять коэффициент. Для income/demographic/"
+            "device/serp-layout текущая корректировка сопоставляется с "
+            "фактическим Order CPA доступного сегмента."
+        ),
+    }
+
+
 # ------------------------------------------------------------
 # SEARCH QUERY INTELLIGENCE
 # ------------------------------------------------------------
@@ -5268,39 +8097,211 @@ def build_search_query_intelligence(existing_keywords):
 # ------------------------------------------------------------
 
 def build_placement_intelligence():
-    # Отдельно получаем goal-specific конверсии и поведенческие
-    # метрики. Так динамические Conversions_<goal> не теряются
-    # из-за комбинации большого числа метрик в одном отчёте.
+    """
+    Placement + 10 goal columns can be expensive for Reports API.
+    v10 fixes the offline timeout in two ways:
+    1) removes Device from the goal report because it is not shown in
+       the placement table;
+    2) builds 60 days as four 15-day windows and merges them locally.
+    """
+
+    today = datetime.now(
+        timezone.utc
+    ).date()
+
+    period_end = (
+        today
+        - timedelta(
+            days=1
+        )
+    )
+
+    period_start = (
+        today
+        - timedelta(
+            days=REPORT_DAYS
+        )
+    )
+
+    windows = []
+    cursor = period_start
+
+    while cursor <= period_end:
+        window_end = min(
+            cursor
+            + timedelta(
+                days=14
+            ),
+            period_end,
+        )
+
+        windows.append(
+            (
+                cursor,
+                window_end,
+            )
+        )
+
+        cursor = (
+            window_end
+            + timedelta(
+                days=1
+            )
+        )
+
     goal_fields = [
         "Placement",
         "ExternalNetworkName",
-        "Device",
         "Impressions",
         "Clicks",
         "Cost",
         "Conversions",
     ]
 
-    goal_text = request_advanced_report(
-        "MR Placements goals v9",
-        "CUSTOM_REPORT",
-        goal_fields,
-        filters=[{
-            "Field": "AdNetworkType",
-            "Operator": "EQUALS",
-            "Values": ["AD_NETWORK"],
-        }],
-        order_by=[
-            {
-                "Field": "Cost",
-                "SortOrder": "DESCENDING",
-            }
-        ],
-    )
+    goal_rows = []
+    failed_windows = []
+    successful_windows = []
 
-    goal_rows = parse_header_tsv(
-        goal_text
-    )
+    def fetch_goal_window(
+        window_from,
+        window_to,
+        depth=0,
+    ):
+        """
+        Placement is one of the highest-cardinality report dimensions.
+        If a 15-day request remains in the offline queue, split the
+        interval in half and retry. In the worst case the script reaches
+        one-day windows instead of blocking the whole Action on one huge
+        offline report.
+        """
+        try:
+            goal_text = request_advanced_report(
+                "MR Placements goals v10",
+                "CUSTOM_REPORT",
+                goal_fields,
+                filters=[{
+                    "Field": "AdNetworkType",
+                    "Operator": "EQUALS",
+                    "Values": [
+                        "AD_NETWORK"
+                    ],
+                }],
+                order_by=[{
+                    "Field": "Cost",
+                    "SortOrder": (
+                        "DESCENDING"
+                    ),
+                }],
+                date_from_override=(
+                    window_from
+                ),
+                date_to_override=(
+                    window_to
+                ),
+                # Long 202 loops are less useful than splitting the
+                # high-cardinality placement request into a smaller range.
+                max_attempts=10,
+            )
+
+            rows = parse_header_tsv(
+                goal_text
+            )
+
+            successful_windows.append({
+                "date_from": (
+                    window_from.isoformat()
+                ),
+                "date_to": (
+                    window_to.isoformat()
+                ),
+                "rows": len(
+                    rows
+                ),
+                "split_depth": (
+                    depth
+                ),
+            })
+
+            return rows
+
+        except Exception as error:
+            if window_from < window_to:
+                total_days = (
+                    window_to
+                    - window_from
+                ).days
+
+                midpoint = (
+                    window_from
+                    + timedelta(
+                        days=(
+                            total_days
+                            // 2
+                        )
+                    )
+                )
+
+                print(
+                    "Placement window still queued; splitting:",
+                    window_from,
+                    window_to,
+                    "->",
+                    window_from,
+                    midpoint,
+                    "+",
+                    midpoint + timedelta(days=1),
+                    window_to,
+                    flush=True,
+                )
+
+                return (
+                    fetch_goal_window(
+                        window_from,
+                        midpoint,
+                        depth + 1,
+                    )
+                    + fetch_goal_window(
+                        midpoint
+                        + timedelta(days=1),
+                        window_to,
+                        depth + 1,
+                    )
+                )
+
+            failed_windows.append({
+                "date_from": (
+                    window_from.isoformat()
+                ),
+                "date_to": (
+                    window_to.isoformat()
+                ),
+                "error": str(
+                    error
+                ),
+                "split_depth": (
+                    depth
+                ),
+            })
+
+            print(
+                "Placement single-day window skipped:",
+                window_from,
+                error,
+                flush=True,
+            )
+
+            return []
+
+    for (
+        window_from,
+        window_to,
+    ) in windows:
+        goal_rows.extend(
+            fetch_goal_window(
+                window_from,
+                window_to,
+            )
+        )
 
     quality_rows = []
 
@@ -5308,25 +8309,35 @@ def build_placement_intelligence():
         quality_fields = [
             "Placement",
             "ExternalNetworkName",
-            "Device",
             "Sessions",
             "Bounces",
             "AvgPageviews",
         ]
 
-        quality_text = request_advanced_report(
-            "MR Placements quality v9",
-            "CUSTOM_REPORT",
-            quality_fields,
-            filters=[{
-                "Field": "AdNetworkType",
-                "Operator": "EQUALS",
-                "Values": ["AD_NETWORK"],
-            }],
+        quality_text = (
+            request_advanced_report(
+                "MR Placements quality v10",
+                "CUSTOM_REPORT",
+                quality_fields,
+                filters=[{
+                    "Field": (
+                        "AdNetworkType"
+                    ),
+                    "Operator": (
+                        "EQUALS"
+                    ),
+                    "Values": [
+                        "AD_NETWORK"
+                    ],
+                }],
+                max_attempts=30,
+            )
         )
 
-        quality_rows = parse_header_tsv(
-            quality_text
+        quality_rows = (
+            parse_header_tsv(
+                quality_text
+            )
         )
 
     except Exception as error:
@@ -5352,16 +8363,14 @@ def build_placement_intelligence():
                 )
                 or ""
             ).strip(),
-            str(
-                row.get(
-                    "Device"
-                )
-                or ""
-            ).strip(),
         )
 
-        if key not in quality_map:
-            quality_map[key] = {
+        if key not in (
+            quality_map
+        ):
+            quality_map[
+                key
+            ] = {
                 "sessions": 0,
                 "bounces": 0,
                 "pageviews_weighted": 0.0,
@@ -5377,17 +8386,21 @@ def build_placement_intelligence():
             )
         )
 
-        avg_pageviews = safe_float(
-            row.get(
-                "AvgPageviews"
+        avg_pageviews = (
+            safe_float(
+                row.get(
+                    "AvgPageviews"
+                )
             )
         )
 
-        q["sessions"] += (
-            sessions
-        )
+        q[
+            "sessions"
+        ] += sessions
 
-        q["bounces"] += safe_int(
+        q[
+            "bounces"
+        ] += safe_int(
             row.get(
                 "Bounces"
             )
@@ -5401,13 +8414,13 @@ def build_placement_intelligence():
         )
 
     grouped = {}
-
     goal_column_names = set()
 
     for row in goal_rows:
         goal_column_names.update(
             key
-            for key in row.keys()
+            for key
+            in row.keys()
             if str(
                 key
             ).startswith(
@@ -5439,48 +8452,32 @@ def build_placement_intelligence():
             or ""
         ).strip()
 
-        device = str(
-            row.get(
-                "Device"
-            )
-            or ""
-        ).strip()
-
         key = (
             placement,
             network,
         )
 
         if key not in grouped:
-            grouped[key] = {
+            grouped[
+                key
+            ] = {
                 "placement": (
                     placement
                 ),
                 "external_network": (
                     network
                 ),
-                "devices": set(),
                 "impressions": 0,
                 "clicks": 0,
                 "cost": 0.0,
                 "order_conversions": 0.0,
                 "webinar_conversions": 0.0,
                 "survey_conversions": 0.0,
-                "sessions": 0,
-                "bounces": 0,
-                "pageviews_weighted": 0.0,
             }
 
         item = grouped[
             key
         ]
-
-        if device:
-            item[
-                "devices"
-            ].add(
-                device
-            )
 
         item[
             "impressions"
@@ -5517,48 +8514,42 @@ def build_placement_intelligence():
             "webinar_conversions",
             "survey_conversions",
         ):
-            item[field] += (
-                breakdown[
-                    field
-                ]
-            )
+            item[
+                field
+            ] += breakdown[
+                field
+            ]
 
+    prelim = []
+
+    for key, item in (
+        grouped.items()
+    ):
         q = quality_map.get(
-            (
-                placement,
-                network,
-                device,
-            ),
-            {}
+            key,
+            {},
         )
 
-        item[
-            "sessions"
-        ] += safe_int(
+        sessions = safe_int(
             q.get(
                 "sessions"
             )
         )
 
-        item[
-            "bounces"
-        ] += safe_int(
+        bounces = safe_int(
             q.get(
                 "bounces"
             )
         )
 
-        item[
-            "pageviews_weighted"
-        ] += safe_float(
-            q.get(
-                "pageviews_weighted"
+        pageviews_weighted = (
+            safe_float(
+                q.get(
+                    "pageviews_weighted"
+                )
             )
         )
 
-    prelim = []
-
-    for item in grouped.values():
         m = metrics_from_values(
             item[
                 "impressions"
@@ -5592,29 +8583,17 @@ def build_placement_intelligence():
         )
 
         bounce_rate = (
-            item[
-                "bounces"
-            ]
-            / item[
-                "sessions"
-            ]
+            bounces
+            / sessions
             * 100
-            if item[
-                "sessions"
-            ]
+            if sessions
             else 0
         )
 
         avg_pageviews = (
-            item[
-                "pageviews_weighted"
-            ]
-            / item[
-                "sessions"
-            ]
-            if item[
-                "sessions"
-            ]
+            pageviews_weighted
+            / sessions
+            if sessions
             else 0
         )
 
@@ -5630,21 +8609,8 @@ def build_placement_intelligence():
                     "external_network"
                 ]
             ),
-            "devices": sorted(
-                item[
-                    "devices"
-                ]
-            ),
-            "sessions": (
-                item[
-                    "sessions"
-                ]
-            ),
-            "bounces": (
-                item[
-                    "bounces"
-                ]
-            ),
+            "sessions": sessions,
+            "bounces": bounces,
             "bounce_rate": round(
                 bounce_rate,
                 2,
@@ -5707,7 +8673,9 @@ def build_placement_intelligence():
         ):
             item[
                 "status"
-            ] = "bad_traffic"
+            ] = (
+                "bad_traffic"
+            )
 
         elif (
             baseline_order_cpa > 0
@@ -5717,8 +8685,10 @@ def build_placement_intelligence():
             and item[
                 "order_cpa"
             ]
-            <= baseline_order_cpa
-            * 0.8
+            <= (
+                baseline_order_cpa
+                * 0.8
+            )
         ):
             item[
                 "status"
@@ -5745,15 +8715,16 @@ def build_placement_intelligence():
         for x in prelim
         if x[
             "status"
-        ]
-        in (
+        ] in (
             "waste",
             "bad_traffic",
         )
     ]
 
     return {
-        "rows": prelim[:1000],
+        "rows": prelim[
+            :1000
+        ],
         "summary": {
             "placements": len(
                 prelim
@@ -5767,6 +8738,21 @@ def build_placement_intelligence():
                 )
                 > 0
             ),
+            "windows_total": len(
+                windows
+            ),
+            "windows_successful_requests": len(
+                successful_windows
+            ),
+            "windows_failed": len(
+                failed_windows
+            ),
+            "successful_windows": (
+                successful_windows
+            ),
+            "failed_windows": (
+                failed_windows
+            ),
             "baseline_order_cpa": round(
                 baseline_order_cpa,
                 2,
@@ -5779,7 +8765,8 @@ def build_placement_intelligence():
                     x[
                         "cost"
                     ]
-                    for x in waste_rows
+                    for x
+                    in waste_rows
                 ),
                 2,
             ),
@@ -5796,7 +8783,8 @@ def build_placement_intelligence():
                     x[
                         "order_conversions"
                     ]
-                    for x in prelim
+                    for x
+                    in prelim
                 ),
                 2,
             ),
@@ -5805,7 +8793,8 @@ def build_placement_intelligence():
                     x[
                         "webinar_conversions"
                     ]
-                    for x in prelim
+                    for x
+                    in prelim
                 ),
                 2,
             ),
@@ -5814,7 +8803,8 @@ def build_placement_intelligence():
                     x[
                         "survey_conversions"
                     ]
-                    for x in prelim
+                    for x
+                    in prelim
                 ),
                 2,
             ),
@@ -6964,13 +9954,20 @@ def creative_summary(
 # BUILD REPORT
 # ============================================================
 
-def build_report():
+def build_report(
+    previous_report=None,
+):
+    previous_report = (
+        previous_report
+        or {}
+    )
+
     print(
         "======================================",
         flush=True,
     )
     print(
-        "MARKETING RADAR v9",
+        "MARKETING RADAR v10",
         flush=True,
     )
     print(
@@ -6979,7 +9976,7 @@ def build_report():
     )
 
     print(
-        "\n1/15 Campaign report + goal breakdown",
+        "\n1/20 Campaign report + goal breakdown",
         flush=True,
     )
     campaign_rows = (
@@ -7000,7 +9997,7 @@ def build_report():
     })
 
     print(
-        "\n2/15 Campaign configuration",
+        "\n2/20 Campaign configuration",
         flush=True,
     )
     campaign_configuration = (
@@ -7017,7 +10014,7 @@ def build_report():
     )
 
     print(
-        "\n3/15 Portfolio strategy configuration",
+        "\n3/20 Portfolio strategy configuration",
         flush=True,
     )
     strategy_configuration = (
@@ -7033,7 +10030,7 @@ def build_report():
     )
 
     print(
-        "\n4/15 Keyword report + goal breakdown",
+        "\n4/20 Keyword report + goal breakdown",
         flush=True,
     )
     keyword_rows = (
@@ -7041,7 +10038,7 @@ def build_report():
     )
 
     print(
-        "\n5/15 Keyword status/state",
+        "\n5/20 Keyword status/state",
         flush=True,
     )
     keyword_configuration = (
@@ -7081,24 +10078,46 @@ def build_report():
     )
 
     print(
-        "\n6/15 Search Query Intelligence",
+        "\n6/20 Ad group configuration / regions",
         flush=True,
     )
-    search_queries = optional_module(
-        "Search Query Intelligence",
-        lambda: build_search_query_intelligence(
-            keyword_rows
-        ),
-        {
-            "rows": [],
-            "summary": {
-                "queries": 0
+    adgroup_configuration = (
+        optional_module(
+            "Ad group configuration",
+            lambda: get_adgroup_configuration(
+                campaign_ids
+            ),
+            {
+                "rows": [],
+                "by_id": {},
+                "summary": {},
             },
-        },
+        )
     )
 
     print(
-        "\n7/15 Negative keyword audit",
+        "\n7/20 Search Query Intelligence",
+        flush=True,
+    )
+    search_queries = (
+        optional_module(
+            "Search Query Intelligence",
+            lambda: (
+                build_search_query_intelligence(
+                    keyword_rows
+                )
+            ),
+            {
+                "rows": [],
+                "summary": {
+                    "queries": 0
+                },
+            },
+        )
+    )
+
+    print(
+        "\n8/20 Negative keyword audit",
         flush=True,
     )
     negative_keywords = (
@@ -7109,7 +10128,7 @@ def build_report():
     )
 
     print(
-        "\n8/15 Priority Goals Intelligence",
+        "\n9/20 Priority Goals Intelligence",
         flush=True,
     )
     priority_goals = (
@@ -7120,22 +10139,94 @@ def build_report():
     )
 
     print(
-        "\n9/15 Placement Intelligence",
+        "\n10/20 Auction Intelligence (API-only)",
         flush=True,
     )
-    placements = optional_module(
-        "Placement Intelligence",
-        build_placement_intelligence,
-        {
-            "rows": [],
-            "summary": {
-                "placements": 0
+    auction_intelligence = (
+        optional_module(
+            "Auction Intelligence",
+            lambda: build_auction_intelligence(
+                keyword_configuration,
+                campaign_configuration,
+                previous_report,
+            ),
+            {
+                "rows": [],
+                "summary": {},
+                "note": "",
             },
-        },
+        )
     )
 
     print(
-        "\n10/15 Geo Intelligence",
+        "\n11/20 Change Intelligence (API-only)",
+        flush=True,
+    )
+    change_intelligence = (
+        optional_module(
+            "Change Intelligence",
+            lambda: build_change_intelligence(
+                campaign_configuration,
+                previous_report,
+            ),
+            {
+                "rows": [],
+                "timestamp": (
+                    datetime.now(
+                        timezone.utc
+                    ).replace(
+                        microsecond=0
+                    ).isoformat().replace(
+                        "+00:00",
+                        "Z",
+                    )
+                ),
+                "checked_since": None,
+                "configuration_snapshot": {},
+                "summary": {},
+            },
+        )
+    )
+
+    print(
+        "\n12/20 Delivery Diagnostics / hasSearchVolume",
+        flush=True,
+    )
+    delivery_diagnostics = (
+        optional_module(
+            "Delivery Diagnostics",
+            lambda: build_delivery_diagnostics(
+                keyword_configuration,
+                keyword_rows,
+                adgroup_configuration,
+            ),
+            {
+                "rows": [],
+                "summary": {},
+                "note": "",
+            },
+        )
+    )
+
+    print(
+        "\n13/20 Placement Intelligence",
+        flush=True,
+    )
+    placements = (
+        optional_module(
+            "Placement Intelligence",
+            build_placement_intelligence,
+            {
+                "rows": [],
+                "summary": {
+                    "placements": 0
+                },
+            },
+        )
+    )
+
+    print(
+        "\n14/20 Geo Intelligence",
         flush=True,
     )
     geo = optional_module(
@@ -7151,37 +10242,79 @@ def build_report():
     )
 
     print(
-        "\n11/15 Audience Intelligence",
+        "\n15/20 Audience Intelligence",
         flush=True,
     )
-    audience = optional_module(
-        "Audience Intelligence",
-        build_audience_intelligence,
-        {
-            "rows": [],
-            "summary": {
-                "segments": 0
+    audience = (
+        optional_module(
+            "Audience Intelligence",
+            build_audience_intelligence,
+            {
+                "rows": [],
+                "summary": {
+                    "segments": 0
+                },
             },
-        },
+        )
     )
 
     print(
-        "\n12/15 Search Position Economics",
+        "\n16/20 Search Position Economics",
         flush=True,
     )
-    positions = optional_module(
-        "Search Position Economics",
-        build_position_intelligence,
-        {
-            "rows": [],
-            "summary": {
-                "rows": 0
+    positions = (
+        optional_module(
+            "Search Position Economics",
+            build_position_intelligence,
+            {
+                "rows": [],
+                "summary": {
+                    "rows": 0
+                },
             },
-        },
+        )
+    )
+
+    # Campaign summary is already available here and needed for
+    # configuration audit.
+    campaigns = (
+        aggregate_campaigns(
+            campaign_rows
+        )
+    )
+
+    summary = (
+        calculate_summary(
+            campaigns
+        )
     )
 
     print(
-        "\n13/15 Ad performance + goal breakdown",
+        "\n17/20 BidModifier / Configuration Audit (API-only)",
+        flush=True,
+    )
+    raw_bid_modifiers = (
+        optional_module(
+            "BidModifiers.get",
+            lambda: get_bid_modifiers(
+                campaign_ids
+            ),
+            [],
+        )
+    )
+
+    configuration_audit = (
+        build_configuration_audit(
+            raw_bid_modifiers,
+            campaign_configuration,
+            audience,
+            positions,
+            summary,
+        )
+    )
+
+    print(
+        "\n18/20 Ad performance + goal breakdown",
         flush=True,
     )
     ad_rows = get_ad_rows()
@@ -7202,7 +10335,7 @@ def build_report():
     )
 
     print(
-        "\n14/15 Creative metadata + attribution",
+        "\n19/20 Creative metadata + strict attribution",
         flush=True,
     )
     ads = get_ads(
@@ -7212,7 +10345,9 @@ def build_report():
     ad_asset_map = {}
     registry = {}
 
-    for ad_id, ad in ads.items():
+    for ad_id, ad in (
+        ads.items()
+    ):
         assets = (
             extract_ad_assets(
                 ad
@@ -7234,7 +10369,8 @@ def build_report():
         asset[
             "asset_id"
         ]
-        for asset in registry.values()
+        for asset
+        in registry.values()
         if asset[
             "asset_key"
         ].startswith(
@@ -7246,7 +10382,8 @@ def build_report():
         asset[
             "asset_id"
         ]
-        for asset in registry.values()
+        for asset
+        in registry.values()
         if asset[
             "asset_key"
         ].startswith(
@@ -7289,16 +10426,8 @@ def build_report():
     )
 
     print(
-        "\n15/15 Final summary",
+        "\n20/20 Final summary",
         flush=True,
-    )
-
-    campaigns = aggregate_campaigns(
-        campaign_rows
-    )
-
-    summary = calculate_summary(
-        campaigns
     )
 
     c_summary = creative_summary(
@@ -7348,16 +10477,46 @@ def build_report():
                 {}
             )
         ),
+        "auction": (
+            auction_intelligence.get(
+                "summary",
+                {}
+            )
+        ),
+        "changes": (
+            change_intelligence.get(
+                "summary",
+                {}
+            )
+        ),
+        "delivery": (
+            delivery_diagnostics.get(
+                "summary",
+                {}
+            )
+        ),
+        "configuration_audit": (
+            configuration_audit.get(
+                "summary",
+                {}
+            )
+        ),
     }
 
     return {
         "meta": {
-            "updated_at": datetime.now(
-                timezone.utc
-            ).isoformat(),
-            "source": "yandex_direct",
-            "period_days": REPORT_DAYS,
-            "report_version": 9,
+            "updated_at": (
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+            ),
+            "source": (
+                "yandex_direct"
+            ),
+            "period_days": (
+                REPORT_DAYS
+            ),
+            "report_version": 10,
             "conversion_attribution_model": (
                 CONVERSION_ATTRIBUTION_MODEL
             ),
@@ -7371,12 +10530,15 @@ def build_report():
                 "поле выводится со значением 0."
             ),
             "creative_method": (
-                "exact_proxy_shared_context_v9"
+                "strict_asset_attribution_v10"
             ),
-            "creative_shared_proxy_note": (
-                "shared_proxy присваивает статистику responsive-объявления "
-                "каждому присутствующему визуалу. Это контекстная оценка, "
-                "а не доказанная индивидуальная атрибуция."
+            "creative_limitation": (
+                "Reports API не предоставляет CreativeId / AdImageHash "
+                "как статистический segment. Для responsive/combinatorial "
+                "объявлений с несколькими визуалами индивидуальные CTR/CPC/"
+                "клики/расход не приписываются картинкам. Exact доступен "
+                "для dedicated ad; proxy — если у объявления ровно один "
+                "визуальный ассет."
             ),
             "keyword_method": (
                 "CRITERIA_PERFORMANCE_REPORT + Keywords.get"
@@ -7395,6 +10557,10 @@ def build_report():
                 "positions",
                 "priority_goals",
                 "negative_keywords",
+                "auction_intelligence",
+                "change_intelligence",
+                "delivery_diagnostics",
+                "configuration_audit",
             ],
         },
 
@@ -7407,7 +10573,9 @@ def build_report():
         ),
         "creatives": creatives,
 
-        "keywords": keyword_rows,
+        "keywords": (
+            keyword_rows
+        ),
         "keyword_summary": (
             keyword_summary
         ),
@@ -7430,6 +10598,19 @@ def build_report():
 
         "priority_goals": (
             priority_goals
+        ),
+
+        "auction_intelligence": (
+            auction_intelligence
+        ),
+        "change_intelligence": (
+            change_intelligence
+        ),
+        "delivery_diagnostics": (
+            delivery_diagnostics
+        ),
+        "configuration_audit": (
+            configuration_audit
         ),
 
         "advanced_summary": (
@@ -7483,7 +10664,7 @@ def encrypt_report(report):
     )
 
     return {
-        "version": 7,
+        "version": 10,
 
         "kdf": (
             "PBKDF2-SHA256"
@@ -7522,7 +10703,13 @@ def encrypt_report(report):
 # ============================================================
 
 def main():
-    report = build_report()
+    previous_report = (
+        decrypt_existing_report()
+    )
+
+    report = build_report(
+        previous_report
+    )
 
     encrypted = encrypt_report(
         report
