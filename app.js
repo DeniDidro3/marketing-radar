@@ -1,6 +1,7 @@
 let DATA = null;
 let ALERT_FILTER = "all";
 let KEYWORD_SUBTAB = "performance";
+let CREATIVE_ATTRIBUTION_FILTER = "all";
 
 const PLACEMENT_FILTERS = {
   placement: "",
@@ -172,6 +173,10 @@ const ADVANCED_SECTIONS = [
   ["geo", "География"],
   ["positions", "Позиции поиска"],
   ["prioritygoals", "Priority Goals"],
+  ["auction", "Аукцион API"],
+  ["delivery", "Диагностика показов"],
+  ["changes", "Изменения API"],
+  ["configaudit", "Configuration Audit"],
 ];
 
 const REMOVED_SECTIONS = [
@@ -250,6 +255,30 @@ function ensureAdvancedUI() {
       "Priority Goals",
       "На какие именно цели и конверсии настроена оптимизация алгоритма в кампаниях и портфельных стратегиях.",
       "priorityGoalsBody",
+    ],
+
+    auction: [
+      "Auction Intelligence",
+      "Текущий аукцион по фразам: вход в поиск, цена премиум-показов, конкуренция и изменение цены.",
+      "auctionBody",
+    ],
+
+    delivery: [
+      "Delivery Diagnostics",
+      "Есть ли поисковый спрос на ключ, но нет фактических показов: API-only диагностика hasSearchVolume.",
+      "deliveryBody",
+    ],
+
+    changes: [
+      "Change Intelligence",
+      "Какие кампании и дочерние объекты менялись, и где Яндекс пересчитал статистику.",
+      "changesBody",
+    ],
+
+    configaudit: [
+      "Configuration Audit",
+      "Фактические BidModifiers и проверка направления корректировок против эффективности сегментов.",
+      "configAuditBody",
     ],
   };
 
@@ -838,6 +867,91 @@ function advancedSignals() {
     DATA.audience?.summary
     || {};
 
+  const auction =
+    DATA.auction_intelligence?.summary
+    || {};
+
+  const delivery =
+    DATA.delivery_diagnostics?.summary
+    || {};
+
+  const changes =
+    DATA.change_intelligence?.summary
+    || {};
+
+  const config =
+    DATA.configuration_audit?.summary
+    || {};
+
+  if (
+    Number(
+      delivery.demand_exists_no_delivery
+      || 0
+    ) > 0
+  ) {
+    signals.push({
+      severity: "critical",
+      label: "DELIVERY API",
+      title:
+        `${number(delivery.demand_exists_no_delivery)} ключей: спрос есть, показов нет`,
+      text:
+        "KeywordsResearch.hasSearchVolume говорит YES, но за период у ключа 0 показов.",
+    });
+  }
+
+  if (
+    Number(
+      changes.statistics_corrections
+      || 0
+    ) > 0
+  ) {
+    signals.push({
+      severity: "warning",
+      label: "CHANGES API",
+      title:
+        `${number(changes.statistics_corrections)} кампаний с пересчётом статистики`,
+      text:
+        "Яндекс скорректировал ранее полученную статистику; см. BorderDate.",
+    });
+  }
+
+  if (
+    (
+      Number(config.conflicts_raise || 0)
+      + Number(config.conflicts_lower || 0)
+    ) > 0
+  ) {
+    signals.push({
+      severity: "warning",
+      label: "BID MODIFIERS",
+      title:
+        `${
+          number(
+            Number(config.conflicts_raise || 0)
+            + Number(config.conflicts_lower || 0)
+          )
+        } подозрительных корректировок`,
+      text:
+        "Направление коэффициента расходится с доступной Order-эффективностью сегмента.",
+    });
+  }
+
+  if (
+    Number(
+      auction.below_search_entry
+      || 0
+    ) > 0
+  ) {
+    signals.push({
+      severity: "critical",
+      label: "АУКЦИОН",
+      title:
+        `${number(auction.below_search_entry)} ключей ниже цены входа в поиск`,
+      text:
+        "Текущая ставка ниже MinSearchPrice по данным Bids.get.",
+    });
+  }
+
   if (
     Number(q.negative_candidates || 0) > 0
   ) {
@@ -1079,17 +1193,82 @@ function renderBudget() {
   `;
 }
 
-function creativeStatus(status) {
-  return ({
-    successful: ["🟢", "Успешный"],
-    normal: ["🟡", "Средний"],
-    weak: ["🔴", "Слабый"],
-    fatigue: ["🔥", "Выгорает"],
-    improving: ["🚀", "Улучшается"],
-    insufficient_data: ["⚪", "Мало данных"],
-    no_peers: ["⚪", "Не с чем сравнить"],
-    unattributable: ["⚫", "Нельзя определить"],
-  })[status] || ["⚪", "Без оценки"];
+function creativeStatus(
+  status
+) {
+  return (
+    {
+      successful: [
+        "🟢",
+        "Успешный"
+      ],
+
+      normal: [
+        "🟡",
+        "Средний"
+      ],
+
+      weak: [
+        "🔴",
+        "Слабый"
+      ],
+
+      fatigue: [
+        "🔥",
+        "Выгорает"
+      ],
+
+      improving: [
+        "🚀",
+        "Улучшается"
+      ],
+
+      insufficient_data: [
+        "⚪",
+        "Мало данных"
+      ],
+
+      no_peers: [
+        "⚪",
+        "Не с чем сравнить"
+      ],
+
+      unattributable: [
+        "⚫",
+        "Нет asset-level статистики"
+      ],
+    }[
+      status
+    ]
+    ||
+    [
+      "⚪",
+      "Без оценки"
+    ]
+  );
+}
+
+function creativeAttributionLabel(
+  value
+) {
+  return (
+    {
+      exact:
+        "EXACT · отдельный визуальный ad",
+
+      proxy:
+        "SINGLE-ASSET · один визуал в объявлении",
+
+      unattributable:
+        "MULTI-ASSET · Direct не делит статистику",
+    }[
+      value
+    ]
+    ||
+    value
+    ||
+    "—"
+  );
 }
 
 function renderCreatives() {
@@ -1100,133 +1279,394 @@ function renderCreatives() {
 
   if (!box) return;
 
-  const rows =
-    DATA.creatives
-    || [];
+  const allRows =
+    [...(DATA.creatives || [])];
 
-  if (!rows.length) {
+  if (!allRows.length) {
     box.innerHTML =
       `<div class="note">Визуальные креативы не найдены.</div>`;
     return;
   }
 
-  box.innerHTML =
-    rows
-      .map(
-        c => {
-          const [icon, label] =
-            creativeStatus(c.status);
+  const counts = {
+    exact:
+      allRows.filter(
+        x => x.attribution === "exact"
+      ).length,
 
-          const preview =
-            c.preview_url
-            || c.thumbnail_url
-            || c.original_url;
+    proxy:
+      allRows.filter(
+        x => x.attribution === "proxy"
+      ).length,
 
-          const score =
-            c.score == null
-              ? "—"
-              : c.score;
+    unattributable:
+      allRows.filter(
+        x => x.attribution === "unattributable"
+      ).length,
+  };
 
-          const note =
-            c.status === "unattributable"
-              ? "В объявлении несколько визуалов, поэтому статистику нельзя надёжно распределить."
-              : c.attribution === "proxy"
-                ? "Proxy-оценка: статистика объявления с единственным визуальным ассетом."
-                : "";
+  const rows =
+    allRows
+      .filter(
+        item =>
+          CREATIVE_ATTRIBUTION_FILTER === "all"
+          || item.attribution === CREATIVE_ATTRIBUTION_FILTER
+      )
+      .sort(
+        (a, b) => {
+          const priority = {
+            exact: 0,
+            proxy: 1,
+            unattributable: 2,
+          };
 
-          return `
-            <article class="creative" style="overflow:hidden">
-              ${
-                preview
-                  ? `
+          const pa =
+            priority[a.attribution]
+            ?? 9;
+
+          const pb =
+            priority[b.attribution]
+            ?? 9;
+
+          if (pa !== pb) {
+            return pa - pb;
+          }
+
+          return (
+            Number(b.clicks || 0)
+            - Number(a.clicks || 0)
+          );
+        }
+      );
+
+  const limitation =
+    DATA.meta?.creative_limitation
+    || (
+      "Direct Reports не отдаёт CreativeId/AdImageHash как статистическое измерение. "
+      + "Если в одном responsive-объявлении несколько картинок, честно разделить между ними клики и расход нельзя."
+    );
+
+  box.innerHTML = `
+    <div
+      style="
+        grid-column:1/-1;
+        display:flex;
+        justify-content:space-between;
+        align-items:flex-start;
+        gap:14px;
+        flex-wrap:wrap;
+        padding:15px;
+        border:1px solid #20354e;
+        border-radius:12px;
+        background:#0e1c2e;
+        margin-bottom:2px;
+      "
+    >
+      <div style="max-width:820px">
+        <strong>
+          Статистика теперь не копируется между несколькими креативами
+        </strong>
+
+        <div style="
+          color:#8ea2bb;
+          font-size:11px;
+          line-height:1.55;
+          margin-top:5px;
+        ">
+          ${esc(limitation)}
+          Для MULTI-ASSET карточек показатели креатива выводятся как «—»,
+          а общая статистика объявления показывается только как отдельный контекст,
+          не как эффективность конкретной картинки.
+        </div>
+
+        <div style="
+          display:flex;
+          gap:8px;
+          flex-wrap:wrap;
+          margin-top:10px;
+          font-size:10px;
+        ">
+          ${pill(`EXACT ${counts.exact}`)}
+          ${pill(`SINGLE-ASSET ${counts.proxy}`)}
+          ${pill(`MULTI-ASSET ${counts.unattributable}`)}
+        </div>
+      </div>
+
+      <select
+        id="creativeAttributionSelect"
+        style="
+          background:#091525;
+          color:#dce7f2;
+          border:1px solid #20354e;
+          border-radius:9px;
+          padding:9px 10px;
+        "
+      >
+        <option value="all" ${
+          CREATIVE_ATTRIBUTION_FILTER === "all"
+            ? "selected"
+            : ""
+        }>
+          Все креативы
+        </option>
+
+        <option value="exact" ${
+          CREATIVE_ATTRIBUTION_FILTER === "exact"
+            ? "selected"
+            : ""
+        }>
+          Только EXACT
+        </option>
+
+        <option value="proxy" ${
+          CREATIVE_ATTRIBUTION_FILTER === "proxy"
+            ? "selected"
+            : ""
+        }>
+          Только SINGLE-ASSET
+        </option>
+
+        <option value="unattributable" ${
+          CREATIVE_ATTRIBUTION_FILTER === "unattributable"
+            ? "selected"
+            : ""
+        }>
+          Только MULTI-ASSET
+        </option>
+      </select>
+    </div>
+
+    ${
+      rows
+        .map(
+          c => {
+            const [
+              icon,
+              label
+            ] =
+              creativeStatus(
+                c.status
+              );
+
+            const preview =
+              c.preview_url
+              || c.thumbnail_url
+              || c.original_url;
+
+            const score =
+              c.score == null
+                ? "—"
+                : c.score;
+
+            const hasIndividualStats =
+              c.attribution === "exact"
+              || c.attribution === "proxy";
+
+            const contextImpressions =
+              Number(
+                c.unattributed_impressions
+                || 0
+              );
+
+            const contextClicks =
+              Number(
+                c.unattributed_clicks
+                || 0
+              );
+
+            const contextSpend =
+              Number(
+                c.unattributed_spend
+                || 0
+              );
+
+            return `
+              <article
+                class="creative"
+                style="overflow:hidden"
+              >
+                ${
+                  preview
+                    ? `
+                      <div style="
+                        width:100%;
+                        aspect-ratio:16/10;
+                        border-radius:10px;
+                        overflow:hidden;
+                        background:#07111f;
+                        margin-bottom:16px;
+                        display:flex;
+                        align-items:center;
+                        justify-content:center;
+                      ">
+                        <img
+                          src="${esc(preview)}"
+                          alt="Creative preview"
+                          loading="lazy"
+                          style="
+                            width:100%;
+                            height:100%;
+                            object-fit:contain;
+                          "
+                        >
+                      </div>
+                    `
+                    : ""
+                }
+
+                <div class="creative-head">
+                  <div>
                     <div style="
-                      width:100%;
-                      aspect-ratio:16/10;
-                      border-radius:10px;
-                      overflow:hidden;
-                      background:#07111f;
-                      margin-bottom:16px;
-                      display:flex;
-                      align-items:center;
-                      justify-content:center;
+                      font-size:9px;
+                      color:#7990a8;
+                      margin-bottom:4px;
                     ">
-                      <img
-                        src="${esc(preview)}"
-                        alt="Creative preview"
-                        loading="lazy"
-                        style="
-                          width:100%;
-                          height:100%;
-                          object-fit:contain;
-                        "
-                      >
+                      ${esc((c.kind || "creative").toUpperCase())}
                     </div>
-                  `
-                  : ""
-              }
 
-              <div class="creative-head">
-                <div>
-                  <div style="
-                    font-size:9px;
-                    color:#7990a8;
-                    margin-bottom:4px;
-                  ">
-                    ${esc((c.kind || "creative").toUpperCase())}
+                    <h4>
+                      ${esc(c.name || `Creative ${c.asset_id || ""}`)}
+                    </h4>
                   </div>
 
-                  <h4>
-                    ${esc(c.name || `Creative ${c.asset_id || ""}`)}
-                  </h4>
+                  <span class="fatigue">
+                    ${score}
+                  </span>
                 </div>
 
-                <span class="fatigue">
-                  ${score}
-                </span>
-              </div>
+                <div style="
+                  margin-top:8px;
+                  font-size:10px;
+                  color:#8ea2bb;
+                ">
+                  ${esc(c.campaign_name || "")}
+                </div>
 
-              <div style="
-                margin-top:8px;
-                font-size:10px;
-                color:#8ea2bb;
-              ">
-                ${esc(c.campaign_name || "")}
-              </div>
+                <div style="
+                  display:flex;
+                  gap:6px;
+                  flex-wrap:wrap;
+                  margin-top:12px;
+                ">
+                  ${pill(`${icon} ${label}`)}
+                  ${pill(c.network || "—")}
+                  ${pill(c.asset_type || c.kind || "—")}
+                  ${pill(creativeAttributionLabel(c.attribution))}
+                </div>
 
-              <div style="
-                display:flex;
-                gap:6px;
-                flex-wrap:wrap;
-                margin-top:12px;
-              ">
-                ${pill(`${icon} ${label}`)}
-                ${pill(c.network || "—")}
-                ${pill(c.asset_type || c.kind || "—")}
-              </div>
+                <div class="stats" style="margin-top:15px">
+                  ${mini(
+                    "CTR",
+                    hasIndividualStats
+                      ? pct(c.ctr)
+                      : "—"
+                  )}
 
-              <div class="stats" style="margin-top:15px">
-                ${mini("CTR", pct(c.ctr))}
-                ${mini("CPC", c.avg_cpc ? money(c.avg_cpc) : "—")}
-                ${mini("Клики", number(c.clicks))}
-                ${mini("Расход", money(c.spend))}
-                ${mini("Order", decimal(c.order_conversions))}
-                ${mini("Вебинар", decimal(c.webinar_conversions))}
-                ${mini("Опрос", decimal(c.survey_conversions))}
-                ${mini("CPA Order", c.order_cpa ? money(c.order_cpa) : "—")}
-              </div>
+                  ${mini(
+                    "CPC",
+                    hasIndividualStats && c.avg_cpc
+                      ? money(c.avg_cpc)
+                      : "—"
+                  )}
 
-              <p>${esc(c.reason || "")}</p>
+                  ${mini(
+                    "Клики",
+                    hasIndividualStats
+                      ? number(c.clicks)
+                      : "—"
+                  )}
 
-              ${
-                note
-                  ? `<div class="note" style="margin-top:12px">${esc(note)}</div>`
-                  : ""
-              }
-            </article>
-          `;
-        }
-      )
-      .join("");
+                  ${mini(
+                    "Расход",
+                    hasIndividualStats
+                      ? money(c.spend)
+                      : "—"
+                  )}
+
+                  ${mini(
+                    "Order",
+                    hasIndividualStats
+                      ? decimal(c.order_conversions)
+                      : "—"
+                  )}
+
+                  ${mini(
+                    "Вебинар",
+                    hasIndividualStats
+                      ? decimal(c.webinar_conversions)
+                      : "—"
+                  )}
+
+                  ${mini(
+                    "Опрос",
+                    hasIndividualStats
+                      ? decimal(c.survey_conversions)
+                      : "—"
+                  )}
+
+                  ${mini(
+                    "CPA Order",
+                    hasIndividualStats && c.order_cpa
+                      ? money(c.order_cpa)
+                      : "—"
+                  )}
+                </div>
+
+                <p>
+                  ${esc(c.reason || "")}
+                </p>
+
+                ${
+                  c.attribution === "proxy"
+                    ? `
+                      <div class="note" style="margin-top:12px">
+                        В объявлении ровно один визуальный ассет.
+                        Поэтому статистика AdId используется как proxy этого визуала.
+                      </div>
+                    `
+                    : ""
+                }
+
+                ${
+                  c.attribution === "unattributable"
+                    ? `
+                      <div class="note" style="margin-top:12px">
+                        <strong>
+                          Индивидуальные данные этого креатива Direct API не отдаёт.
+                        </strong>
+
+                        ${
+                          (
+                            contextImpressions
+                            || contextClicks
+                            || contextSpend
+                          )
+                            ? `
+                              <div style="
+                                margin-top:6px;
+                                color:#8ea2bb;
+                              ">
+                                Контекст объявлений, где этот визуал присутствовал:
+                                ${number(contextImpressions)} показов ·
+                                ${number(contextClicks)} кликов ·
+                                ${money(contextSpend)} расхода.
+                                Эти значения <strong>не являются</strong>
+                                статистикой конкретной картинки.
+                              </div>
+                            `
+                            : ""
+                        }
+                      </div>
+                    `
+                    : ""
+                }
+              </article>
+            `;
+          }
+        )
+        .join("")
+    }
+  `;
 }
 
 function mini(label, value) {
@@ -2285,6 +2725,19 @@ function renderPlacements() {
           s.goal_data_available === false
             ? "⚠ Direct не вернул goal-specific поля Conversions_* для отчёта по площадкам. Проверь лог `goal_columns_found` после Action."
             : `Goal-specific колонки Direct обнаружены: ${number(s.goal_columns_found || 0)}. Если у площадки стоят нули, это означает, что по выбранным отслеживаемым целям Direct не вернул конверсии для этой площадки.`
+        }
+
+        ${
+          Number(s.windows_failed || 0) > 0
+            ? `<div style="margin-top:6px;color:#ffb65c">
+                ⚠ Часть дневных окон площадок не собралась: ${number(s.windows_failed)}.
+                Таблица построена по успешно полученным периодам.
+              </div>`
+            : Number(s.windows_successful_requests || 0) > 0
+              ? `<div style="margin-top:6px;color:#52d39a">
+                  Площадочный отчёт собран частями: ${number(s.windows_successful_requests)} успешных API-окон.
+                </div>`
+              : ""
         }
       </div>
 
@@ -3939,6 +4392,720 @@ function renderPriorityGoals() {
     );
 }
 
+
+/* ============================== AUCTION INTELLIGENCE ============================== */
+
+function auctionSignalLabel(value) {
+  return ({
+    below_search_entry:
+      "🔴 Ниже входа в поиск",
+
+    auction_heating:
+      "🟠 Аукцион дорожает",
+
+    premium_expensive:
+      "🟡 Большой gap до премиума",
+
+    rarely_served:
+      "🟡 RARELY_SERVED",
+
+    normal:
+      "🟢 Норма",
+
+    limited_data:
+      "⚪ Ограниченные данные",
+  })[value]
+  || value
+  || "—";
+}
+
+function signedPct(value) {
+  if (
+    value === null
+    || value === undefined
+    || Number.isNaN(
+      Number(value)
+    )
+  ) {
+    return "—";
+  }
+
+  const n =
+    Number(value);
+
+  return `${
+    n > 0
+      ? "+"
+      : ""
+  }${n.toFixed(1)}%`;
+}
+
+function renderAuction() {
+  const box =
+    document.getElementById(
+      "auctionBody"
+    );
+
+  if (!box) return;
+
+  const data =
+    DATA.auction_intelligence
+    || {};
+
+  const rows =
+    data.rows
+    || [];
+
+  const s =
+    data.summary
+    || {};
+
+  if (!rows.length) {
+    box.innerHTML =
+      moduleEmpty(
+        "Bids.get не вернул аукционные данные. Это может происходить для кампаний, где поиск отключён, или при отсутствии подходящих ключей."
+      );
+    return;
+  }
+
+  box.innerHTML =
+    kpiGrid([
+      ["Ключей", number(s.keywords)],
+      [
+        "Ниже входа",
+        number(s.below_search_entry)
+      ],
+      [
+        "Аукцион дорожает",
+        number(s.auction_heating)
+      ],
+      [
+        "Большой gap до премиума",
+        number(s.premium_expensive)
+      ],
+    ])
+    +
+    `<div class="note" style="margin-bottom:12px">
+      ${esc(data.note || "")}
+      <strong>MinSearchPrice</strong> — минимальная цена входа в поиск.
+      <strong>Premium required bid</strong> — ориентир ставки для премиального блока.
+      Денежные значения Bids API уже приведены из micros в ₽.
+    </div>`
+    +
+    table(
+      [
+        "Ключ",
+        "Кампания",
+        "Serving",
+        "Текущая ставка",
+        "Цена входа",
+        "Текущая цена клика",
+        "Ставка для премиума",
+        "Gap до премиума",
+        "Медиана конкурентов",
+        "Δ текущей цены",
+        "РСЯ 50%",
+        "Сигнал",
+      ],
+      rows
+        .slice(0, 1000)
+        .map(
+          x => `
+            <tr>
+              <td>
+                <strong>${esc(x.keyword || `ID ${x.keyword_id}`)}</strong>
+              </td>
+
+              <td>
+                ${esc(x.campaign_name || x.campaign_id || "—")}
+              </td>
+
+              <td>
+                ${esc(x.serving_status || "—")}
+              </td>
+
+              <td>
+                ${x.bid ? money(x.bid) : "—"}
+              </td>
+
+              <td>
+                ${x.min_search_price ? money(x.min_search_price) : "—"}
+              </td>
+
+              <td>
+                ${x.current_search_price ? money(x.current_search_price) : "—"}
+              </td>
+
+              <td>
+                ${x.premium_required_bid ? money(x.premium_required_bid) : "—"}
+              </td>
+
+              <td>
+                ${
+                  x.premium_gap_pct == null
+                    ? "—"
+                    : signedPct(x.premium_gap_pct)
+                }
+              </td>
+
+              <td>
+                ${x.competitor_bid_median ? money(x.competitor_bid_median) : "—"}
+              </td>
+
+              <td>
+                ${signedPct(x.current_search_price_change_pct)}
+              </td>
+
+              <td>
+                ${
+                  x.context_coverage_50?.price
+                    ? `${money(x.context_coverage_50.price)} · ${decimal(x.context_coverage_50.probability)}%`
+                    : "—"
+                }
+              </td>
+
+              <td>
+                ${esc(auctionSignalLabel(x.signal))}
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    );
+}
+
+
+/* ============================== DELIVERY DIAGNOSTICS ============================== */
+
+function deliveryDiagnosisLabel(value) {
+  return ({
+    demand_exists_no_delivery:
+      "🔴 Спрос есть, показов нет",
+
+    no_search_demand:
+      "⚪ Нет прогнозного спроса",
+
+    rarely_served:
+      "🟡 RARELY_SERVED",
+
+    inactive_or_moderation:
+      "🟡 Неактивен / модерация",
+
+    delivering:
+      "🟢 Показы идут",
+
+    forecast_unavailable:
+      "⚪ Прогноз недоступен",
+  })[value]
+  || value
+  || "—";
+}
+
+function yesNoLabel(value) {
+  if (value === "YES") {
+    return "Да";
+  }
+
+  if (value === "NO") {
+    return "Нет";
+  }
+
+  return "—";
+}
+
+function renderDelivery() {
+  const box =
+    document.getElementById(
+      "deliveryBody"
+    );
+
+  if (!box) return;
+
+  const data =
+    DATA.delivery_diagnostics
+    || {};
+
+  const rows =
+    data.rows
+    || [];
+
+  const s =
+    data.summary
+    || {};
+
+  if (!rows.length) {
+    box.innerHTML =
+      moduleEmpty(
+        "Диагностика показов недоступна: KeywordsResearch.hasSearchVolume не вернул данные."
+      );
+    return;
+  }
+
+  box.innerHTML =
+    kpiGrid([
+      ["Ключей", number(s.keywords)],
+      [
+        "Спрос есть, показов нет",
+        number(s.demand_exists_no_delivery)
+      ],
+      [
+        "Нет поискового спроса",
+        number(s.no_search_demand)
+      ],
+      [
+        "RARELY_SERVED",
+        number(s.rarely_served)
+      ],
+    ])
+    +
+    `<div class="note" style="margin-bottom:12px">
+      ${esc(data.note || "")}
+      Проверено региональных конфигураций:
+      <strong>${number(s.region_configs_checked)}</strong>.
+      ${
+        Number(
+          s.region_configs_skipped_due_to_rate_limit
+          || 0
+        ) > 0
+          ? `Ещё ${number(s.region_configs_skipped_due_to_rate_limit)} конфигураций пропущено, чтобы не превысить лимит hasSearchVolume.`
+          : ""
+      }
+    </div>`
+    +
+    table(
+      [
+        "Ключ",
+        "Группа",
+        "State",
+        "ServingStatus",
+        "Спрос",
+        "Desktop",
+        "Mobile",
+        "Tablet",
+        "Показы 60д",
+        "Клики 60д",
+        "Расход 60д",
+        "Диагноз",
+      ],
+      rows
+        .slice(0, 1500)
+        .map(
+          x => `
+            <tr>
+              <td>
+                <strong>${esc(x.keyword)}</strong>
+              </td>
+
+              <td>
+                ${esc(x.ad_group_name || x.ad_group_id || "—")}
+              </td>
+
+              <td>
+                ${esc(x.state || "—")}
+              </td>
+
+              <td>
+                ${esc(x.serving_status || "—")}
+              </td>
+
+              <td>
+                ${yesNoLabel(x.has_search_volume)}
+              </td>
+
+              <td>
+                ${yesNoLabel(x.desktop_search_volume)}
+              </td>
+
+              <td>
+                ${yesNoLabel(x.mobile_search_volume)}
+              </td>
+
+              <td>
+                ${yesNoLabel(x.tablet_search_volume)}
+              </td>
+
+              <td>
+                ${number(x.impressions_60d)}
+              </td>
+
+              <td>
+                ${number(x.clicks_60d)}
+              </td>
+
+              <td>
+                ${money(x.cost_60d)}
+              </td>
+
+              <td>
+                ${esc(deliveryDiagnosisLabel(x.diagnosis))}
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    );
+}
+
+
+/* ============================== CHANGE INTELLIGENCE ============================== */
+
+function changeLabels(values) {
+  if (!values?.length) {
+    return "—";
+  }
+
+  const map = {
+    SELF:
+      "Настройки кампании",
+
+    CHILDREN:
+      "Группы / объявления / ключи",
+
+    STAT:
+      "Пересчёт статистики",
+  };
+
+  return values
+    .map(
+      x => map[x] || x
+    )
+    .join(", ");
+}
+
+function renderChanges() {
+  const box =
+    document.getElementById(
+      "changesBody"
+    );
+
+  if (!box) return;
+
+  const data =
+    DATA.change_intelligence
+    || {};
+
+  const rows =
+    data.rows
+    || [];
+
+  const s =
+    data.summary
+    || {};
+
+  box.innerHTML =
+    kpiGrid([
+      [
+        "Изменённых кампаний",
+        number(s.changed_campaigns)
+      ],
+      [
+        "Настройки кампании",
+        number(s.campaign_settings)
+      ],
+      [
+        "Дочерние объекты",
+        number(s.child_changes)
+      ],
+      [
+        "Пересчёты статистики",
+        number(s.statistics_corrections)
+      ],
+    ])
+    +
+    `<div class="note" style="margin-bottom:12px">
+      Проверено с:
+      <strong>${esc(data.checked_since || "—")}</strong>.
+      Новый Changes timestamp:
+      <strong>${esc(data.timestamp || "—")}</strong>.
+      Если есть <strong>BorderDate</strong>, ранее сохранённая статистика после этой даты могла быть скорректирована Яндексом.
+    </div>`
+    +
+    (
+      rows.length
+        ? table(
+            [
+              "Кампания",
+              "Что изменилось",
+              "Поля snapshot",
+              "BorderDate",
+              "Группы в batch",
+              "Объявления в batch",
+            ],
+            rows
+              .map(
+                x => `
+                  <tr>
+                    <td>
+                      <strong>${esc(x.campaign_name)}</strong>
+                    </td>
+
+                    <td>
+                      ${esc(changeLabels(x.changes_in))}
+                    </td>
+
+                    <td>
+                      ${
+                        x.changed_fields_from_snapshot?.length
+                          ? esc(
+                              x.changed_fields_from_snapshot.join(", ")
+                            )
+                          : "—"
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        x.border_date
+                          ? `<strong style="color:#ffb65c">${esc(x.border_date)}</strong>`
+                          : "—"
+                      }
+                    </td>
+
+                    <td>
+                      ${number(x.modified_ad_group_ids_in_batch?.length || 0)}
+                    </td>
+
+                    <td>
+                      ${number(x.modified_ad_ids_in_batch?.length || 0)}
+                    </td>
+                  </tr>
+                `
+              )
+              .join("")
+          )
+        : moduleEmpty(
+            "С момента предыдущей проверки Changes API изменений не обнаружено."
+          )
+    );
+}
+
+
+/* ============================== CONFIGURATION AUDIT ============================== */
+
+function modifierTypeLabel(value) {
+  return ({
+    MOBILE_ADJUSTMENT:
+      "Mobile",
+
+    TABLET_ADJUSTMENT:
+      "Tablet",
+
+    DESKTOP_ADJUSTMENT:
+      "Desktop + Smart TV",
+
+    DESKTOP_ONLY_ADJUSTMENT:
+      "Desktop only",
+
+    DEMOGRAPHICS_ADJUSTMENT:
+      "Пол / возраст",
+
+    RETARGETING_ADJUSTMENT:
+      "Аудитория / ретаргетинг",
+
+    REGIONAL_ADJUSTMENT:
+      "Регион",
+
+    VIDEO_ADJUSTMENT:
+      "Видео",
+
+    SMART_AD_ADJUSTMENT:
+      "Smart ad",
+
+    SERP_LAYOUT_ADJUSTMENT:
+      "Размещение в поиске",
+
+    INCOME_GRADE_ADJUSTMENT:
+      "Платежеспособность",
+
+    AD_GROUP_ADJUSTMENT:
+      "Группа объявлений",
+  })[value]
+  || value
+  || "—";
+}
+
+function auditStatusLabel(value) {
+  return ({
+    conflict_raise:
+      "🔴 Повышаем слабый сегмент",
+
+    conflict_lower:
+      "🟠 Понижаем сильный сегмент",
+
+    ok:
+      "🟢 Без явного конфликта",
+
+    no_performance_match:
+      "⚪ Нет сопоставимого разреза",
+
+    disabled:
+      "⚫ Выключено",
+  })[value]
+  || value
+  || "—";
+}
+
+function modifierParameters(
+  parameters
+) {
+  if (
+    !parameters
+    || typeof parameters !== "object"
+  ) {
+    return "—";
+  }
+
+  const rows =
+    Object.entries(
+      parameters
+    )
+      .filter(
+        ([key]) =>
+          key !== "BidModifier"
+          && key !== "Enabled"
+      );
+
+  if (!rows.length) {
+    return "—";
+  }
+
+  return rows
+    .map(
+      ([key, value]) =>
+        `${key}: ${
+          typeof value === "object"
+            ? JSON.stringify(value)
+            : value
+        }`
+    )
+    .join(" · ");
+}
+
+function renderConfigurationAudit() {
+  const box =
+    document.getElementById(
+      "configAuditBody"
+    );
+
+  if (!box) return;
+
+  const data =
+    DATA.configuration_audit
+    || {};
+
+  const rows =
+    data.rows
+    || [];
+
+  const s =
+    data.summary
+    || {};
+
+  if (!rows.length) {
+    box.innerHTML =
+      moduleEmpty(
+        "BidModifiers.get не вернул корректировки для текущих кампаний."
+      );
+    return;
+  }
+
+  box.innerHTML =
+    kpiGrid([
+      ["Корректировок", number(s.modifiers)],
+      ["Уровень кампании", number(s.campaign_level)],
+      [
+        "Повышаем слабые",
+        number(s.conflicts_raise)
+      ],
+      [
+        "Понижаем сильные",
+        number(s.conflicts_lower)
+      ],
+    ])
+    +
+    `<div class="note" style="margin-bottom:12px">
+      ${esc(data.note || "")}
+      Коэффициент <strong>130%</strong> означает множитель <strong>×1.30</strong>,
+      70% — <strong>×0.70</strong>.
+    </div>`
+    +
+    table(
+      [
+        "Кампания",
+        "Уровень",
+        "Тип",
+        "Коэффициент",
+        "Параметры",
+        "Сопоставленный сегмент",
+        "Order",
+        "CPA Order",
+        "Клики",
+        "Статус",
+      ],
+      rows
+        .map(
+          x => `
+            <tr>
+              <td>
+                <strong>${esc(x.campaign_name || x.campaign_id || "—")}</strong>
+              </td>
+
+              <td>
+                ${esc(x.level || "—")}
+                ${
+                  x.ad_group_id
+                    ? `<div style="font-size:9px;color:#74889e;margin-top:3px">
+                        Group ${esc(x.ad_group_id)}
+                      </div>`
+                    : ""
+                }
+              </td>
+
+              <td>
+                ${esc(modifierTypeLabel(x.type))}
+              </td>
+
+              <td>
+                <strong>${number(x.coefficient)}%</strong>
+                <div style="font-size:9px;color:#74889e;margin-top:3px">
+                  ×${decimal(x.multiplier)}
+                </div>
+              </td>
+
+              <td style="max-width:340px">
+                ${esc(modifierParameters(x.parameters))}
+              </td>
+
+              <td>
+                ${esc(x.comparison_label || "—")}
+              </td>
+
+              <td>
+                ${decimal(x.performance?.order_conversions)}
+              </td>
+
+              <td>
+                ${
+                  x.performance?.order_cpa
+                    ? money(x.performance.order_cpa)
+                    : "—"
+                }
+              </td>
+
+              <td>
+                ${number(x.performance?.clicks)}
+              </td>
+
+              <td>
+                ${esc(auditStatusLabel(x.audit_status))}
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    );
+}
+
 /* ============================== NAV / EVENTS ============================== */
 
 const TITLES = {
@@ -3995,6 +5162,26 @@ const TITLES = {
   prioritygoals: [
     "Priority Goals",
     "Какие цели фактически используются стратегиями и автоматической корректировкой ставок.",
+  ],
+
+  auction: [
+    "Auction Intelligence",
+    "Текущий аукцион по ключевым фразам — данные Bids.get, которых нет в обычном отчёте кампаний.",
+  ],
+
+  delivery: [
+    "Delivery Diagnostics",
+    "Отделяем отсутствие спроса от проблем с доставкой рекламы через hasSearchVolume.",
+  ],
+
+  changes: [
+    "Change Intelligence",
+    "Изменения объектов и ретроспективные пересчёты статистики через Changes API.",
+  ],
+
+  configaudit: [
+    "Configuration Audit",
+    "Фактические BidModifiers и автоматическая проверка конфликтующих корректировок.",
   ],
 };
 
@@ -4162,6 +5349,18 @@ document.addEventListener(
   event => {
     if (
       event.target?.id
+      === "creativeAttributionSelect"
+    ) {
+      CREATIVE_ATTRIBUTION_FILTER =
+        event.target.value
+        || "all";
+
+      renderCreatives();
+      return;
+    }
+
+    if (
+      event.target?.id
       === "audienceMetricSelect"
     ) {
       AUDIENCE_METRIC =
@@ -4230,6 +5429,52 @@ document.addEventListener(
     const positionFilter =
       event.target?.closest?.(
         "[data-position-filter]"
+      );
+
+    if (positionFilter) {
+      POSITION_FILTERS[
+        positionFilter.dataset.positionFilter
+      ] = positionFilter.value;
+
+      renderPositions();
+    }
+  }
+);
+
+document.addEventListener(
+  "input",
+  event => {
+    const placementFilter =
+      event.target?.closest?.(
+        'input[data-placement-filter]'
+      );
+
+    if (placementFilter) {
+      PLACEMENT_FILTERS[
+        placementFilter.dataset.placementFilter
+      ] = placementFilter.value;
+
+      renderPlacements();
+      return;
+    }
+
+    const geoFilter =
+      event.target?.closest?.(
+        'input[data-geo-filter]:not([type="checkbox"])'
+      );
+
+    if (geoFilter) {
+      GEO_FILTERS[
+        geoFilter.dataset.geoFilter
+      ] = geoFilter.value;
+
+      renderGeo();
+      return;
+    }
+
+    const positionFilter =
+      event.target?.closest?.(
+        'input[data-position-filter]'
       );
 
     if (positionFilter) {
