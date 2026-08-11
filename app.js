@@ -4262,6 +4262,52 @@ function renderPlacements() {
     return;
   }
 
+  // Список кампаний именно из строк Placement Intelligence.
+  // В v13.1 dropdown ссылался на placementCampaigns,
+  // но переменная не создавалась — из-за ReferenceError
+  // render() останавливался на Площадках РСЯ, поэтому
+  // Аудитория, География и следующие вкладки тоже оставались пустыми.
+  const placementCampaigns =
+    [...new Map(
+      allRows
+        .filter(
+          x =>
+            String(
+              x.campaign_id
+              || ""
+            )
+        )
+        .map(
+          x => [
+            String(
+              x.campaign_id
+            ),
+            x.campaign_name
+              || `Кампания ${x.campaign_id}`,
+          ]
+        )
+    ).entries()]
+      .sort(
+        (a, b) =>
+          String(a[1])
+            .localeCompare(
+              String(b[1]),
+              "ru"
+            )
+      );
+
+  // Если глобальный фильтр кампаний изменился и локально
+  // была выбрана уже недоступная кампания — возвращаем "Все".
+  if (
+    PLACEMENT_FILTERS.campaign !== "all"
+    && !placementCampaigns.some(
+      ([id]) =>
+        id === PLACEMENT_FILTERS.campaign
+    )
+  ) {
+    PLACEMENT_FILTERS.campaign = "all";
+  }
+
   const networks =
     [...new Set(
       allRows
